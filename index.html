@@ -2100,12 +2100,21 @@ body {
     </div>
 </div>
 <script type="module">
+
+    
+        
+        
+    // ============================================
+// ESPACE PARENT - CS LA COLOMBE
+// VERSION FINALE CORRIGÉE - TOUTES FONCTIONNALITÉS
+// ============================================
+
 // ============================================
 // CONFIGURATION FIREBASE
 // ============================================
 import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, createUserWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-auth.js";
-import { getFirestore, collection, getDocs, query, where, addDoc, serverTimestamp, doc, updateDoc, orderBy, getDoc, setDoc, onSnapshot, limit, writeBatch } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore.js";
+import { getFirestore, collection, getDocs, query, where, addDoc, serverTimestamp, doc, updateDoc, orderBy, getDoc, setDoc, onSnapshot, limit, writeBatch, deleteDoc } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore.js";
 import { getMessaging, getToken, onMessage, isSupported } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-messaging.js";
 
 // Configuration Firebase
@@ -2143,6 +2152,8 @@ let parentPhotoFile = null;
 let currentPrimaryPeriod = '1ère période';
 let notifications = [];
 let verifiedChildren = [];
+let currentGradesPeriod = 'P1';
+let childGradesData = null;
 
 // Stocker les compteurs de notifications
 let notificationCounts = {
@@ -2155,24 +2166,113 @@ let notificationCounts = {
     children: 0,
     profile: 0,
     communication: 0,
-    notifications: 0
+    notifications: 0,
+    communiques: 0
 };
 
 // ============================================
-// INITIALISATION DU SERVICE WORKER
+// ENREGISTREMENT SERVICE WORKER (CRITIQUE POUR NOTIFICATIONS)
 // ============================================
 async function registerServiceWorker() {
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('firebase-messaging-sw.js');
+      // Désenregistrer les anciens Service Workers
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      for (let registration of registrations) {
+        await registration.unregister();
+        console.log('✅ Ancien Service Worker désenregistré');
+      }
+      
+      // Enregistrer le nouveau
+      const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js', {
+        scope: '/'
+      });
+      
       console.log('✅ Service Worker enregistré avec succès:', registration.scope);
+      
+      // Vérifier la mise à jour
+      registration.update();
+      
+      // Écouter les messages du Service Worker
+      navigator.serviceWorker.addEventListener('message', function(event) {
+        console.log('📨 Message du Service Worker:', event.data);
+        if (event.data && event.data.type === 'NAVIGATE') {
+          const link = document.querySelector(`.nav-menu a[data-page="${event.data.page}"]`);
+          if (link) link.click();
+        }
+      });
+      
       return registration;
     } catch (error) {
       console.error('❌ Erreur enregistrement Service Worker:', error);
     }
+  } else {
+    console.log('❌ Service Worker non supporté');
   }
   return null;
 }
+
+// ============================================
+// DÉTECTION INSTALLATION PWA
+// ============================================
+let deferredPrompt;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredPrompt = e;
+  
+  // Afficher le bouton d'installation UNE SEULE FOIS
+  if (!localStorage.getItem('pwaInstallPromptShown')) {
+    showInstallPrompt();
+  }
+});
+
+function showInstallPrompt() {
+  const installToast = document.createElement('div');
+  installToast.className = 'notification-toast info';
+  installToast.id = 'install-pwa-toast';
+  installToast.innerHTML = `
+    <div class="notification-header">
+      <div class="notification-title">📱 Installer l'application</div>
+      <button class="notification-close" onclick="this.closest('.notification-toast').remove()">&times;</button>
+    </div>
+    <div class="notification-body">
+      Installez Espace Parent sur votre appareil pour un accès rapide hors ligne !
+    </div>
+    <div class="notification-actions" style="margin-top: 10px;">
+      <button id="install-pwa-btn" class="btn btn-success btn-sm">
+        <i class="fas fa-download"></i> Installer
+      </button>
+      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('install-pwa-toast').remove()">
+        Plus tard
+      </button>
+    </div>
+  `;
+  
+  document.body.appendChild(installToast);
+  
+  setTimeout(() => {
+    installToast.classList.add('show');
+  }, 100);
+  
+  document.getElementById('install-pwa-btn').addEventListener('click', async () => {
+    if (!deferredPrompt) return;
+    
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    console.log(`📱 Installation: ${outcome}`);
+    
+    deferredPrompt = null;
+    installToast.remove();
+    localStorage.setItem('pwaInstallPromptShown', 'true');
+  });
+}
+
+// Détecter si l'app est installée
+window.addEventListener('appinstalled', (e) => {
+  console.log('✅ PWA installée avec succès');
+  localStorage.setItem('pwaInstalled', 'true');
+  showToast('Application installée avec succès !', 'success');
+});
 
 // ============================================
 // INITIALISATION FIREBASE MESSAGING
@@ -2208,9 +2308,12 @@ async function initializeFirebaseMessaging() {
     if (token) {
       console.log('✅ Token FCM obtenu:', token.substring(0, 30) + '...');
       
-      if (currentParent) {
+      if (currentParent && currentParent.matricule) {
         await saveFCMToken(token);
       }
+      
+      // Sauvegarder le token localement
+      localStorage.setItem('fcmToken', token);
     }
 
     return messaging;
@@ -2458,48 +2561,28 @@ function setupRealtimeListeners() {
   });
 
   // 8. Écouter les communiqués
-  const communiquesQuery = query(
-    collection(db, 'parent_communique_relations'),
-    where('parentId', '==', currentParent.matricule)
-  );
-  
-  onSnapshot(communiquesQuery, (snapshot) => {
-    snapshot.docChanges().forEach((change) => {
-      if (change.type === 'added') {
-        const notification = {
-          title: '📄 Nouveau communiqué',
-          body: 'Un nouveau communiqué de paiement est disponible',
-          type: 'communiques',
-          page: 'communiques',
-          timestamp: new Date().toISOString()
-        };
-        
-        sendNotification(notification);
-      }
+  if (currentParent && currentParent.matricule) {
+    const communiquesQuery = query(
+      collection(db, 'parent_communique_relations'),
+      where('parentId', '==', currentParent.matricule)
+    );
+    
+    onSnapshot(communiquesQuery, (snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === 'added') {
+          const notification = {
+            title: '📄 Nouveau communiqué',
+            body: 'Un nouveau communiqué de paiement est disponible',
+            type: 'communiques',
+            page: 'communiques',
+            timestamp: new Date().toISOString()
+          };
+          
+          sendNotification(notification);
+        }
+      });
     });
-  });
-
-  // 9. Écouter les horaires
-  const timetableQuery = query(
-    collection(db, 'student_schedules'),
-    where('studentMatricule', '==', currentParent.matricule)
-  );
-  
-  onSnapshot(timetableQuery, (snapshot) => {
-    snapshot.docChanges().forEach((change) => {
-      if (change.type === 'added') {
-        const notification = {
-          title: '🕐 Nouvel horaire',
-          body: 'Un nouvel horaire a été publié pour votre enfant',
-          type: 'timetable',
-          page: 'timetable',
-          timestamp: new Date().toISOString()
-        };
-        
-        sendNotification(notification);
-      }
-    });
-  });
+  }
 }
 
 // ============================================
@@ -2507,11 +2590,13 @@ function setupRealtimeListeners() {
 // ============================================
 function sendNotification(notification) {
   // 1. Ajouter à la liste locale
-  notifications.unshift({
+  const newNotification = {
     id: `notif_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
     ...notification,
     read: false
-  });
+  };
+  
+  notifications.unshift(newNotification);
   
   // 2. Mettre à jour le compteur
   updateNotificationCount(1);
@@ -2520,13 +2605,20 @@ function sendNotification(notification) {
   saveNotificationsToStorage();
   
   // 4. Afficher une notification toast
-  showNotificationToast(notification);
+  showNotificationToast(newNotification);
   
   // 5. Envoyer au Service Worker pour affichage même si app fermée
   if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
     navigator.serviceWorker.controller.postMessage({
-      type: 'BACKGROUND_NOTIFICATION',
-      data: notification
+      type: 'SHOW_NOTIFICATION',
+      data: {
+        title: notification.title,
+        body: notification.body,
+        icon: '/icon-192x192.png',
+        badge: '/icon-72x72.png',
+        tag: notification.type,
+        data: notification
+      }
     });
   }
   
@@ -2536,7 +2628,7 @@ function sendNotification(notification) {
   // 7. Jouer un son si disponible
   try {
     const audio = new Audio('/notification.mp3');
-    audio.volume = 0.5;
+    audio.volume = 0.3;
     audio.play().catch(() => {});
   } catch (e) {}
 }
@@ -2563,16 +2655,17 @@ async function updateAppBadge(count) {
 // ============================================
 function showNotificationToast(notification) {
   const toast = document.createElement('div');
-  toast.className = `notification-toast ${notification.type}`;
+  toast.className = `notification-toast ${notification.type || 'info'}`;
+  toast.id = `toast-${notification.id}`;
   toast.innerHTML = `
     <div class="notification-header">
-      <div class="notification-title">${notification.title}</div>
-      <button class="notification-close">&times;</button>
+      <div class="notification-title">${notification.title || 'Notification'}</div>
+      <button class="notification-close" onclick="document.getElementById('toast-${notification.id}').remove()">&times;</button>
     </div>
-    <div class="notification-body">${notification.body}</div>
-    <div class="notification-actions">
+    <div class="notification-body">${notification.body || ''}</div>
+    <div class="notification-actions" style="margin-top: 10px;">
       <button class="btn btn-primary btn-sm" onclick="window.viewNotification('${notification.id}')">Voir</button>
-      <button class="btn btn-secondary btn-sm" onclick="window.closeNotificationToast(this)">Fermer</button>
+      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('toast-${notification.id}').remove()">Fermer</button>
     </div>
   `;
   
@@ -2582,17 +2675,12 @@ function showNotificationToast(notification) {
     toast.classList.add('show');
   }, 100);
   
-  toast.querySelector('.notification-close').addEventListener('click', () => {
-    toast.classList.remove('show');
-    setTimeout(() => toast.remove(), 300);
-  });
-  
   setTimeout(() => {
     if (toast.parentNode) {
       toast.classList.remove('show');
       setTimeout(() => toast.remove(), 300);
     }
-  }, 8000);
+  }, 10000);
 }
 
 // ============================================
@@ -2604,12 +2692,12 @@ function setupForegroundListener() {
   onMessage(messaging, (payload) => {
     console.log('📨 Message reçu en premier plan:', payload);
     
-    const { title, body } = payload.notification || {};
+    const notification = payload.notification || {};
     const data = payload.data || {};
     
     sendNotification({
-      title: title || 'Nouvelle notification',
-      body: body || '',
+      title: notification.title || 'Nouvelle notification',
+      body: notification.body || '',
       type: data.type || 'general',
       page: data.page || 'dashboard',
       childId: data.childId,
@@ -2617,26 +2705,6 @@ function setupForegroundListener() {
       timestamp: new Date().toISOString()
     });
   });
-}
-
-// ============================================
-// INITIALISATION COMPLÈTE
-// ============================================
-async function initializeCompleteNotificationSystem() {
-  await registerServiceWorker();
-  await initializeFirebaseMessaging();
-  setupForegroundListener();
-  
-  setInterval(checkForNewData, 5 * 60 * 1000);
-  window.addEventListener('online', checkForNewData);
-}
-
-// ============================================
-// VÉRIFIER LES NOUVELLES DONNÉES
-// ============================================
-async function checkForNewData() {
-  if (!currentParent || childrenList.length === 0) return;
-  console.log('🔍 Vérification périodique des nouvelles données...');
 }
 
 // ============================================
@@ -2651,13 +2719,17 @@ function updateNotificationCount(change) {
   if (currentCount < 0) currentCount = 0;
   
   countElement.textContent = currentCount;
-  countElement.classList.toggle('hidden', currentCount === 0);
+  if (currentCount > 0) {
+    countElement.classList.remove('hidden');
+  } else {
+    countElement.classList.add('hidden');
+  }
 }
 
 function saveNotificationsToStorage() {
   try {
-    if (notifications.length > 50) {
-      notifications = notifications.slice(0, 50);
+    if (notifications.length > 100) {
+      notifications = notifications.slice(0, 100);
     }
     localStorage.setItem('parent_notifications', JSON.stringify(notifications));
   } catch (error) {
@@ -2711,6 +2783,7 @@ function showToast(message, type = 'info') {
 
 function showAlert(message, type = 'info') {
     const alertBox = document.getElementById('global-alert');
+    if (!alertBox) return;
     alertBox.textContent = message;
     alertBox.className = `alert alert-${type}`;
     alertBox.classList.remove('hidden');
@@ -2756,7 +2829,7 @@ function getSeverityLabel(severity) {
 }
 
 function generatePaymentCode() {
-    return 'PAY' + Math.random().toString(36).substring(2, 6).toUpperCase();
+    return 'PAY' + Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
 function getPeriodNameForParent(period) {
@@ -2800,6 +2873,10 @@ window.viewNotification = function(id) {
       updateAppBadge(notifications.filter(n => !n.read).length);
     }
     
+    // Fermer le toast
+    const toast = document.getElementById(`toast-${id}`);
+    if (toast) toast.remove();
+    
     if (notification.page) {
       const link = document.querySelector(`.nav-menu a[data-page="${notification.page}"]`);
       if (link) link.click();
@@ -2809,17 +2886,22 @@ window.viewNotification = function(id) {
 
 window.closeNotificationToast = function(btn) {
   const toast = btn.closest('.notification-toast');
-  toast.classList.remove('show');
-  setTimeout(() => toast.remove(), 300);
+  if (toast) {
+    toast.classList.remove('show');
+    setTimeout(() => toast.remove(), 300);
+  }
 };
 
 window.requestNotificationPermission = async function() {
   const permission = await Notification.requestPermission();
   if (permission === 'granted') {
     await initializeFirebaseMessaging();
+    showToast('Notifications activées avec succès !', 'success');
     return true;
+  } else {
+    showToast('Veuillez autoriser les notifications pour recevoir les alertes', 'warning');
+    return false;
   }
-  return false;
 };
 
 window.testNotification = function() {
@@ -2830,6 +2912,7 @@ window.testNotification = function() {
     page: 'dashboard',
     timestamp: new Date().toISOString()
   });
+  showToast('Notification de test envoyée', 'success');
 };
 
 window.markNotificationAsRead = function(id) {
@@ -2840,27 +2923,12 @@ window.markNotificationAsRead = function(id) {
         saveNotificationsToStorage();
         updateAppBadge(notifications.filter(n => !n.read).length);
         
-        if (document.getElementById('notifications-page').classList.contains('active')) {
-            displayNotifications(document.getElementById('notification-filter').value);
+        if (document.getElementById('notifications-page') && 
+            document.getElementById('notifications-page').classList.contains('active')) {
+            displayNotifications(document.getElementById('notification-filter')?.value || 'all');
         }
         
         showToast('Notification marquée comme lue', 'success');
-    }
-};
-
-window.viewNotification = function(id) {
-    const notification = notifications.find(n => n.id === id);
-    if (notification) {
-        if (!notification.read) {
-            window.markNotificationAsRead(id);
-        }
-        
-        if (notification.data && notification.data.page) {
-            const link = document.querySelector(`.nav-menu a[data-page="${notification.data.page}"]`);
-            if (link) link.click();
-        }
-        
-        showToast('Ouverture de la notification', 'info');
     }
 };
 
@@ -2872,20 +2940,18 @@ window.deleteNotification = function(id) {
         
         if (wasUnread) {
             updateNotificationCount(-1);
+            updateAppBadge(notifications.filter(n => !n.read).length);
         }
         
         saveNotificationsToStorage();
         
-        if (document.getElementById('notifications-page').classList.contains('active')) {
-            displayNotifications(document.getElementById('notification-filter').value);
+        if (document.getElementById('notifications-page') && 
+            document.getElementById('notifications-page').classList.contains('active')) {
+            displayNotifications(document.getElementById('notification-filter')?.value || 'all');
         }
         
         showToast('Notification supprimée', 'success');
     }
-};
-
-window.openNotification = function(id) {
-    window.viewNotification(id);
 };
 
 window.clearAllNotifications = function() {
@@ -2898,9 +2964,11 @@ window.clearAllNotifications = function() {
         const unreadCount = notifications.filter(n => !n.read).length;
         notifications = [];
         updateNotificationCount(-unreadCount);
+        updateAppBadge(0);
         saveNotificationsToStorage();
         
-        if (document.getElementById('notifications-page').classList.contains('active')) {
+        if (document.getElementById('notifications-page') && 
+            document.getElementById('notifications-page').classList.contains('active')) {
             displayNotifications();
         }
         
@@ -2978,63 +3046,95 @@ onAuthStateChanged(auth, async (user) => {
     if (!snap.empty) {
       currentParent = { id: snap.docs[0].id, ...snap.docs[0].data() };
       
-      document.getElementById('login-overlay').classList.add('hidden');
-      document.getElementById('app-root').classList.remove('hidden');
-      document.getElementById('parent-name').textContent = currentParent.fullName;
+      const loginOverlay = document.getElementById('login-overlay');
+      const appRoot = document.getElementById('app-root');
+      const parentName = document.getElementById('parent-name');
+      const parentPhotoContainer = document.getElementById('parent-photo-container');
+      const profilePhotoPreview = document.getElementById('profile-photo-preview');
       
-      if (currentParent.photoURL) {
-          document.getElementById('parent-photo-container').innerHTML = `<img src="${currentParent.photoURL}" class="parent-photo" alt="Photo de profil">`;
-          document.getElementById('profile-photo-preview').innerHTML = `<img src="${currentParent.photoURL}" class="photo-preview">`;
-      } else {
-          document.getElementById('parent-photo-container').innerHTML = `<div class="parent-photo-placeholder"><i class="fas fa-user"></i></div>`;
+      if (loginOverlay) loginOverlay.classList.add('hidden');
+      if (appRoot) appRoot.classList.remove('hidden');
+      if (parentName) parentName.textContent = currentParent.fullName || 'Parent';
+      
+      if (parentPhotoContainer) {
+        if (currentParent.photoURL) {
+          parentPhotoContainer.innerHTML = `<img src="${currentParent.photoURL}" class="parent-photo" alt="Photo de profil">`;
+        } else {
+          parentPhotoContainer.innerHTML = `<div class="parent-photo-placeholder"><i class="fas fa-user"></i></div>`;
+        }
+      }
+      
+      if (profilePhotoPreview) {
+        if (currentParent.photoURL) {
+          profilePhotoPreview.innerHTML = `<img src="${currentParent.photoURL}" class="photo-preview">`;
+        } else {
+          profilePhotoPreview.innerHTML = `<div class="photo-placeholder"><i class="fas fa-user"></i></div>`;
+        }
       }
       
       loadNotificationsFromStorage();
       await loadParentData();
       
-      initializeCompleteNotificationSystem();
-      setupRealtimeListeners();
+      // Initialiser les notifications
+      setTimeout(async () => {
+        await initializeFirebaseMessaging();
+        setupForegroundListener();
+        setupRealtimeListeners();
+      }, 2000);
       
       const unreadCount = notifications.filter(n => !n.read).length;
       updateAppBadge(unreadCount);
-      document.getElementById('notification-count').textContent = unreadCount;
-      if (unreadCount > 0) {
-        document.getElementById('notification-count').classList.remove('hidden');
+      
+      const notificationCount = document.getElementById('notification-count');
+      if (notificationCount) {
+        notificationCount.textContent = unreadCount;
+        if (unreadCount > 0) {
+          notificationCount.classList.remove('hidden');
+        }
       }
+      
     } else {
       await signOut(auth);
       showAlert("Accès refusé.", "error");
     }
   } else {
-    document.getElementById('login-overlay').classList.remove('hidden');
-    document.getElementById('app-root').classList.add('hidden');
+    const loginOverlay = document.getElementById('login-overlay');
+    const appRoot = document.getElementById('app-root');
+    if (loginOverlay) loginOverlay.classList.remove('hidden');
+    if (appRoot) appRoot.classList.add('hidden');
   }
 });
 
 // ============================================
 // FONCTIONS D'ACTIVATION DE COMPTE
 // ============================================
-document.getElementById('show-activation-link').addEventListener('click', (e) => {
+document.getElementById('show-activation-link')?.addEventListener('click', (e) => {
     e.preventDefault();
-    document.getElementById('login-form').closest('.login-card').classList.add('hidden');
-    document.getElementById('activation-card').classList.remove('hidden');
+    const loginCard = document.getElementById('login-form')?.closest('.login-card');
+    const activationCard = document.getElementById('activation-card');
+    if (loginCard) loginCard.classList.add('hidden');
+    if (activationCard) activationCard.classList.remove('hidden');
 });
 
-document.getElementById('show-login-link').addEventListener('click', (e) => {
+document.getElementById('show-login-link')?.addEventListener('click', (e) => {
     e.preventDefault();
-    document.getElementById('activation-card').classList.add('hidden');
-    document.getElementById('login-form').closest('.login-card').classList.remove('hidden');
+    const activationCard = document.getElementById('activation-card');
+    const loginCard = document.getElementById('login-form')?.closest('.login-card');
+    if (activationCard) activationCard.classList.add('hidden');
+    if (loginCard) loginCard.classList.remove('hidden');
     resetActivationForm();
 });
 
-document.getElementById('back-to-step1').addEventListener('click', (e) => {
+document.getElementById('back-to-step1')?.addEventListener('click', (e) => {
     e.preventDefault();
     goToActivationStep(1);
 });
 
-document.getElementById('go-to-login-btn').addEventListener('click', () => {
-    document.getElementById('activation-card').classList.add('hidden');
-    document.getElementById('login-form').closest('.login-card').classList.remove('hidden');
+document.getElementById('go-to-login-btn')?.addEventListener('click', () => {
+    const activationCard = document.getElementById('activation-card');
+    const loginCard = document.getElementById('login-form')?.closest('.login-card');
+    if (activationCard) activationCard.classList.add('hidden');
+    if (loginCard) loginCard.classList.remove('hidden');
     resetActivationForm();
 });
 
@@ -3051,16 +3151,27 @@ function goToActivationStep(step) {
         }
     });
     
-    document.getElementById('activation-step-1').classList.toggle('hidden', step !== 1);
-    document.getElementById('activation-step-2').classList.toggle('hidden', step !== 2);
-    document.getElementById('activation-step-3').classList.toggle('hidden', step !== 3);
+    const step1 = document.getElementById('activation-step-1');
+    const step2 = document.getElementById('activation-step-2');
+    const step3 = document.getElementById('activation-step-3');
+    
+    if (step1) step1.classList.toggle('hidden', step !== 1);
+    if (step2) step2.classList.toggle('hidden', step !== 2);
+    if (step3) step3.classList.toggle('hidden', step !== 3);
 }
 
 function resetActivationForm() {
-    document.getElementById('activation-form-step1').reset();
-    document.getElementById('activation-step-2').classList.add('hidden');
-    document.getElementById('activation-step-3').classList.add('hidden');
-    document.getElementById('additional-matricule').value = '';
+    const form = document.getElementById('activation-form-step1');
+    if (form) form.reset();
+    
+    const step2 = document.getElementById('activation-step-2');
+    const step3 = document.getElementById('activation-step-3');
+    const additionalMatricule = document.getElementById('additional-matricule');
+    
+    if (step2) step2.classList.add('hidden');
+    if (step3) step3.classList.add('hidden');
+    if (additionalMatricule) additionalMatricule.value = '';
+    
     verifiedChildren = [];
     updateChildrenList();
     goToActivationStep(1);
@@ -3068,6 +3179,8 @@ function resetActivationForm() {
 
 function updateChildrenList() {
     const container = document.getElementById('children-container');
+    if (!container) return;
+    
     container.innerHTML = '';
     
     if (verifiedChildren.length === 0) {
@@ -3101,9 +3214,9 @@ window.removeChild = (index) => {
 };
 
 // Étape 1: Vérification du premier matricule
-document.getElementById('activation-form-step1').addEventListener('submit', async (e) => {
+document.getElementById('activation-form-step1')?.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const childMatricule = document.getElementById('child-matricule').value;
+    const childMatricule = document.getElementById('child-matricule')?.value;
     
     if (!childMatricule) {
         showAlert("Veuillez entrer un matricule d'élève", "error");
@@ -3149,8 +3262,12 @@ document.getElementById('activation-form-step1').addEventListener('submit', asyn
             type: studentType
         }];
         
-        document.getElementById('child-name').textContent = studentData.fullName;
-        document.getElementById('child-class').textContent = studentData.class;
+        const childName = document.getElementById('child-name');
+        const childClass = document.getElementById('child-class');
+        
+        if (childName) childName.textContent = studentData.fullName;
+        if (childClass) childClass.textContent = studentData.class;
+        
         updateChildrenList();
         goToActivationStep(2);
         
@@ -3161,8 +3278,8 @@ document.getElementById('activation-form-step1').addEventListener('submit', asyn
 });
 
 // Ajouter un autre enfant
-document.getElementById('add-child-btn').addEventListener('click', async () => {
-    const matricule = document.getElementById('additional-matricule').value;
+document.getElementById('add-child-btn')?.addEventListener('click', async () => {
+    const matricule = document.getElementById('additional-matricule')?.value;
     
     if (!matricule) {
         showAlert("Veuillez entrer un matricule", "error");
@@ -3214,7 +3331,10 @@ document.getElementById('add-child-btn').addEventListener('click', async () => {
         });
         
         updateChildrenList();
-        document.getElementById('additional-matricule').value = '';
+        
+        const additionalMatricule = document.getElementById('additional-matricule');
+        if (additionalMatricule) additionalMatricule.value = '';
+        
         showAlert("Enfant ajouté avec succès", "success");
         
     } catch (error) {
@@ -3224,12 +3344,12 @@ document.getElementById('add-child-btn').addEventListener('click', async () => {
 });
 
 // Création du compte parent
-document.getElementById('create-account-btn').addEventListener('click', async () => {
-    const fullName = document.getElementById('parent-fullname').value;
-    const email = document.getElementById('parent-email').value;
-    const phone = document.getElementById('parent-phone').value;
-    const password = document.getElementById('parent-password').value;
-    const confirmPassword = document.getElementById('parent-password-confirm').value;
+document.getElementById('create-account-btn')?.addEventListener('click', async () => {
+    const fullName = document.getElementById('parent-fullname')?.value;
+    const email = document.getElementById('parent-email')?.value;
+    const phone = document.getElementById('parent-phone')?.value;
+    const password = document.getElementById('parent-password')?.value;
+    const confirmPassword = document.getElementById('parent-password-confirm')?.value;
     
     if (!fullName || !email || !phone || !password) {
         showAlert("Veuillez remplir tous les champs obligatoires", "error");
@@ -3295,10 +3415,16 @@ document.getElementById('create-account-btn').addEventListener('click', async ()
             });
         }
         
-        document.getElementById('created-parent-matricule').textContent = parentMatricule;
-        document.getElementById('created-parent-name').textContent = fullName;
-        document.getElementById('created-parent-email').textContent = email;
-        document.getElementById('created-children-count').textContent = verifiedChildren.length;
+        const createdParentMatricule = document.getElementById('created-parent-matricule');
+        const createdParentName = document.getElementById('created-parent-name');
+        const createdParentEmail = document.getElementById('created-parent-email');
+        const createdChildrenCount = document.getElementById('created-children-count');
+        
+        if (createdParentMatricule) createdParentMatricule.textContent = parentMatricule;
+        if (createdParentName) createdParentName.textContent = fullName;
+        if (createdParentEmail) createdParentEmail.textContent = email;
+        if (createdChildrenCount) createdChildrenCount.textContent = verifiedChildren.length;
+        
         goToActivationStep(3);
         
     } catch (error) {
@@ -3308,10 +3434,15 @@ document.getElementById('create-account-btn').addEventListener('click', async ()
 });
 
 // Connexion avec matricule parent
-document.getElementById('login-form').addEventListener('submit', async (e) => {
+document.getElementById('login-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const matricule = document.getElementById('login-matricule').value;
-    const password = document.getElementById('login-password').value;
+    const matricule = document.getElementById('login-matricule')?.value;
+    const password = document.getElementById('login-password')?.value;
+    
+    if (!matricule || !password) {
+        showAlert("Veuillez remplir tous les champs", "error");
+        return;
+    }
     
     const submitBtn = e.target.querySelector('button[type="submit"]');
     const originalText = submitBtn.textContent;
@@ -3339,7 +3470,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
     }
 });
 
-document.getElementById('logout-btn').addEventListener('click', () => {
+document.getElementById('logout-btn')?.addEventListener('click', () => {
     signOut(auth);
     showAlert("Déconnexion réussie", "success");
 });
@@ -3370,10 +3501,21 @@ async function loadParentData() {
         document.getElementById('kindergarten-homework-child-selector')
     ];
     
-    childSelectors.forEach(s => s.innerHTML = '<option value="">-- Sélectionner un enfant --</option>');
-    secondarySelectors.forEach(s => s.innerHTML = '<option value="">-- Sélectionner un enfant du secondaire --</option>');
-    primarySelectors.forEach(s => s.innerHTML = '<option value="">-- Sélectionner un enfant du primaire --</option>');
-    kindergartenSelectors.forEach(s => s.innerHTML = '<option value="">-- Sélectionner un enfant de la maternelle --</option>');
+    childSelectors.forEach(s => {
+        if (s) s.innerHTML = '<option value="">-- Sélectionner un enfant --</option>';
+    });
+    
+    secondarySelectors.forEach(s => {
+        if (s) s.innerHTML = '<option value="">-- Sélectionner un enfant du secondaire --</option>';
+    });
+    
+    primarySelectors.forEach(s => {
+        if (s) s.innerHTML = '<option value="">-- Sélectionner un enfant du primaire --</option>';
+    });
+    
+    kindergartenSelectors.forEach(s => {
+        if (s) s.innerHTML = '<option value="">-- Sélectionner un enfant de la maternelle --</option>';
+    });
 
     if (currentParent && currentParent.children) {
         childrenList = [];
@@ -3402,14 +3544,22 @@ async function loadParentData() {
                 
                 const displayText = `${childInfo.fullName} - ${childInfo.class} (${childType === 'secondary' ? 'Secondaire' : childType === 'primary' ? 'Primaire' : 'Maternelle'})`;
                 
-                childSelectors.forEach(s => s.innerHTML += `<option value="${childMatricule}">${displayText}</option>`);
+                childSelectors.forEach(s => {
+                    if (s) s.innerHTML += `<option value="${childMatricule}">${displayText}</option>`;
+                });
                 
                 if (childType === 'secondary') {
-                    secondarySelectors.forEach(s => s.innerHTML += `<option value="${childMatricule}">${childInfo.fullName} - ${childInfo.class}</option>`);
+                    secondarySelectors.forEach(s => {
+                        if (s) s.innerHTML += `<option value="${childMatricule}">${childInfo.fullName} - ${childInfo.class}</option>`;
+                    });
                 } else if (childType === 'primary') {
-                    primarySelectors.forEach(s => s.innerHTML += `<option value="${childMatricule}">${childInfo.fullName} - ${childInfo.class}</option>`);
+                    primarySelectors.forEach(s => {
+                        if (s) s.innerHTML += `<option value="${childMatricule}">${childInfo.fullName} - ${childInfo.class}</option>`;
+                    });
                 } else {
-                    kindergartenSelectors.forEach(s => s.innerHTML += `<option value="${childMatricule}">${childInfo.fullName} - ${childInfo.class}</option>`);
+                    kindergartenSelectors.forEach(s => {
+                        if (s) s.innerHTML += `<option value="${childMatricule}">${childInfo.fullName} - ${childInfo.class}</option>`;
+                    });
                 }
             }
         }
@@ -3427,6 +3577,8 @@ async function loadParentData() {
 
 function updateChildrenPage() {
     const container = document.getElementById('children-list-container');
+    if (!container) return;
+    
     container.innerHTML = '';
     
     if (childrenList.length === 0) {
@@ -3451,19 +3603,26 @@ function updateChildrenPage() {
 }
 
 function updateProfileForm() {
-    if (currentParent) {
-        document.getElementById('profile-matricule').value = currentParent.matricule;
-        document.getElementById('profile-fullname').value = currentParent.fullName;
-        document.getElementById('profile-email').value = currentParent.email;
-        document.getElementById('profile-phone').value = currentParent.phone;
-        
-        const statusElement = document.getElementById('notification-status');
+    if (!currentParent) return;
+    
+    const profileMatricule = document.getElementById('profile-matricule');
+    const profileFullname = document.getElementById('profile-fullname');
+    const profileEmail = document.getElementById('profile-email');
+    const profilePhone = document.getElementById('profile-phone');
+    const notificationStatus = document.getElementById('notification-status');
+    
+    if (profileMatricule) profileMatricule.value = currentParent.matricule || '';
+    if (profileFullname) profileFullname.value = currentParent.fullName || '';
+    if (profileEmail) profileEmail.value = currentParent.email || '';
+    if (profilePhone) profilePhone.value = currentParent.phone || '';
+    
+    if (notificationStatus) {
         if (currentParent.notificationEnabled) {
-            statusElement.textContent = '✅ Notifications activées';
-            statusElement.style.color = 'var(--success)';
+            notificationStatus.textContent = '✅ Notifications activées';
+            notificationStatus.style.color = 'var(--success)';
         } else {
-            statusElement.textContent = '❌ Notifications désactivées';
-            statusElement.style.color = 'var(--danger)';
+            notificationStatus.textContent = '❌ Notifications désactivées';
+            notificationStatus.style.color = 'var(--danger)';
         }
     }
 }
@@ -3473,6 +3632,7 @@ function loadYearSelectors() {
     const yearSelectors = document.querySelectorAll('#presence-year');
     
     yearSelectors.forEach(select => {
+        if (!select) return;
         select.innerHTML = '';
         for (let year = currentYear - 1; year <= currentYear + 1; year++) {
             const option = document.createElement('option');
@@ -3483,14 +3643,16 @@ function loadYearSelectors() {
         }
     });
     
-    const currentMonth = new Date().getMonth();
-    document.getElementById('presence-month').value = currentMonth;
+    const presenceMonth = document.getElementById('presence-month');
+    if (presenceMonth) presenceMonth.value = new Date().getMonth();
     
     const today = new Date();
     const year = today.getFullYear();
     const month = (today.getMonth() + 1).toString().padStart(2, '0');
     const monthString = `${year}-${month}`;
-    document.getElementById('timetable-month').value = monthString;
+    
+    const timetableMonth = document.getElementById('timetable-month');
+    if (timetableMonth) timetableMonth.value = monthString;
 }
 
 // ============================================
@@ -3498,6 +3660,8 @@ function loadYearSelectors() {
 // ============================================
 function initCommuniqueSelectors() {
     const childSelector = document.getElementById('communique-child-selector');
+    if (!childSelector) return;
+    
     childSelector.innerHTML = '<option value="all">Tous mes enfants</option>';
     
     childrenList.forEach(child => {
@@ -3506,12 +3670,18 @@ function initCommuniqueSelectors() {
     });
     
     childSelector.addEventListener('change', () => loadCommuniques());
-    document.getElementById('communique-type-filter').addEventListener('change', () => loadCommuniques());
-    document.getElementById('refresh-communiques-btn').addEventListener('click', () => loadCommuniques());
+    
+    const typeFilter = document.getElementById('communique-type-filter');
+    if (typeFilter) typeFilter.addEventListener('change', () => loadCommuniques());
+    
+    const refreshBtn = document.getElementById('refresh-communiques-btn');
+    if (refreshBtn) refreshBtn.addEventListener('click', () => loadCommuniques());
 }
 
 async function loadCommuniques() {
     const container = document.getElementById('communiques-list-container');
+    if (!container) return;
+    
     container.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i><p>Chargement des communiqués...</p></div>';
     
     if (!currentParent || childrenList.length === 0) {
@@ -3549,11 +3719,11 @@ async function loadCommuniques() {
                     ...communiqueData,
                     relationId: relationDoc.id,
                     parentRelation: relationData,
-                    affectedChildren: relationData.studentIds.map((studentId, index) => ({
+                    affectedChildren: relationData.studentIds ? relationData.studentIds.map((studentId, index) => ({
                         matricule: studentId,
-                        name: relationData.studentNames[index] || 'Nom inconnu',
-                        class: relationData.studentClasses[index] || 'Classe inconnue'
-                    }))
+                        name: relationData.studentNames ? relationData.studentNames[index] : 'Nom inconnu',
+                        class: relationData.studentClasses ? relationData.studentClasses[index] : 'Classe inconnue'
+                    })) : []
                 });
             }
         }
@@ -3563,13 +3733,15 @@ async function loadCommuniques() {
             return;
         }
         
-        const selectedChild = document.getElementById('communique-child-selector').value;
-        const selectedType = document.getElementById('communique-type-filter').value;
+        const selectedChild = document.getElementById('communique-child-selector')?.value || 'all';
+        const selectedType = document.getElementById('communique-type-filter')?.value || 'all';
         
         let filteredCommuniques = allCommuniques;
         
         if (selectedChild !== 'all') {
             filteredCommuniques = filteredCommuniques.filter(communique => 
+                communique.parentRelation && 
+                communique.parentRelation.studentIds && 
                 communique.parentRelation.studentIds.includes(selectedChild)
             );
         }
@@ -3602,7 +3774,7 @@ async function loadCommuniques() {
             const daysDiff = Math.ceil((deadlineDate - now) / (1000 * 60 * 60 * 24));
             const isUrgent = daysDiff <= 3 && daysDiff >= 0;
             const isOverdue = daysDiff < 0;
-            const isPaid = communique.parentRelation.status === 'paid';
+            const isPaid = communique.parentRelation && communique.parentRelation.status === 'paid';
             
             let cardClass = 'communique-card';
             if (isOverdue) cardClass += ' urgent';
@@ -3632,7 +3804,7 @@ async function loadCommuniques() {
                     <div class="communique-header">
                         <div style="flex: 1;">
                             <div class="communique-title">
-                                ${communique.feeType} - ${communique.month} ${communique.schoolYear}
+                                ${communique.feeType || 'Frais'} - ${communique.month || ''} ${communique.schoolYear || ''}
                             </div>
                             <div class="communique-meta">
                                 <span><i class="far fa-calendar"></i> Publié le: ${publishedDate}</span>
@@ -3643,22 +3815,23 @@ async function loadCommuniques() {
                         </div>
                         <div>
                             <span class="badge badge-primary">
-                                <i class="fas fa-money-bill-wave"></i> ${parseFloat(communique.amount).toFixed(2)} $
+                                <i class="fas fa-money-bill-wave"></i> ${communique.amount ? parseFloat(communique.amount).toFixed(2) : '0.00'} $
                             </span>
                         </div>
                     </div>
                     
                     <div class="communique-content">
-                        <p><strong>Objet :</strong> Rappel concernant le paiement de <strong>${communique.feeType}</strong></p>
-                        <p><strong>Enfants concernés :</strong> ${communique.affectedChildren.map(child => 
-                            `<span class="badge badge-secondary">${child.name} (${child.matricule})</span>`
-                        ).join(' ')}</p>
+                        <p><strong>Objet :</strong> Rappel concernant le paiement de <strong>${communique.feeType || 'frais'}</strong></p>
+                        <p><strong>Enfants concernés :</strong> ${communique.affectedChildren && communique.affectedChildren.length > 0 ? 
+                            communique.affectedChildren.map(child => 
+                                `<span class="badge badge-secondary">${child.name} (${child.matricule})</span>`
+                            ).join(' ') : 'Aucun enfant spécifié'}</p>
                         ${communique.message ? `<p><strong>Message :</strong> ${communique.message}</p>` : ''}
                     </div>
                     
                     <div class="communique-footer">
                         <div>
-                            <strong>Classes concernées :</strong> ${communique.classes.join(', ')}
+                            <strong>Classes concernées :</strong> ${communique.classes ? communique.classes.join(', ') : 'Non spécifié'}
                         </div>
                         <div class="communique-actions">
                             <button class="btn btn-primary btn-sm" onclick="viewFullCommunique('${communique.id}')">
@@ -3714,37 +3887,39 @@ window.viewFullCommunique = async function(communiqueId) {
         
         const relationData = relationSnap.docs[0].data();
         
-        const selectedChild = document.getElementById('communique-child-selector').value;
+        const selectedChild = document.getElementById('communique-child-selector')?.value || 'all';
         
         const childrenDetails = [];
-        for (let i = 0; i < relationData.studentIds.length; i++) {
-            const studentMatricule = relationData.studentIds[i];
-            
-            if (selectedChild && selectedChild !== 'all' && selectedChild !== studentMatricule) {
-                continue;
-            }
-            
-            let studentDoc = await getDoc(doc(db, 'students', studentMatricule));
-            let studentType = 'secondary';
-            
-            if (!studentDoc.exists()) {
-                studentDoc = await getDoc(doc(db, 'primary_students', studentMatricule));
-                studentType = 'primary';
-            }
-            
-            if (!studentDoc.exists()) {
-                studentDoc = await getDoc(doc(db, 'kindergarten_students', studentMatricule));
-                studentType = 'kindergarten';
-            }
-            
-            if (studentDoc.exists()) {
-                const studentData = studentDoc.data();
-                childrenDetails.push({
-                    matricule: studentMatricule,
-                    name: studentData.fullName,
-                    class: studentData.class,
-                    type: studentType
-                });
+        if (relationData.studentIds) {
+            for (let i = 0; i < relationData.studentIds.length; i++) {
+                const studentMatricule = relationData.studentIds[i];
+                
+                if (selectedChild && selectedChild !== 'all' && selectedChild !== studentMatricule) {
+                    continue;
+                }
+                
+                let studentDoc = await getDoc(doc(db, 'students', studentMatricule));
+                let studentType = 'secondary';
+                
+                if (!studentDoc.exists()) {
+                    studentDoc = await getDoc(doc(db, 'primary_students', studentMatricule));
+                    studentType = 'primary';
+                }
+                
+                if (!studentDoc.exists()) {
+                    studentDoc = await getDoc(doc(db, 'kindergarten_students', studentMatricule));
+                    studentType = 'kindergarten';
+                }
+                
+                if (studentDoc.exists()) {
+                    const studentData = studentDoc.data();
+                    childrenDetails.push({
+                        matricule: studentMatricule,
+                        name: studentData.fullName,
+                        class: studentData.class,
+                        type: studentType
+                    });
+                }
             }
         }
         
@@ -3783,14 +3958,14 @@ window.viewFullCommunique = async function(communiqueId) {
         });
         
         const montantParEnfant = selectedChild && selectedChild !== 'all' 
-            ? parseFloat(communiqueData.amount).toFixed(2)
-            : (parseFloat(communiqueData.amount) / childrenDetails.length).toFixed(2);
+            ? parseFloat(communiqueData.amount || 0).toFixed(2)
+            : (parseFloat(communiqueData.amount || 0) / childrenDetails.length).toFixed(2);
         
         const fullContentHTML = `
             <div class="communique-full-header">
-                <img src="R.png" alt="Logo hybrilink" class="communique-full-logo">
+                <img src="R.png" alt="Logo CS la Colombe" class="communique-full-logo">
                 <div class="communique-full-title">COMMUNIQUE DE PAIEMENT</div>
-                <div>hybrilink</div>
+                <div>Complexe Scolaire la Colombe</div>
                 <div>Lubumbashi, République Démocratique du Congo</div>
                 <div>Tél: +243 097 187 758</div>
             </div>
@@ -3812,32 +3987,32 @@ window.viewFullCommunique = async function(communiqueId) {
             </div>
             
             <div>
-                <p><strong>Objet :</strong> Rappel concernant le paiement de <strong>${communiqueData.feeType}</strong></p>
+                <p><strong>Objet :</strong> Rappel concernant le paiement de <strong>${communiqueData.feeType || 'frais'}</strong></p>
                 
                 <p>Cher(s) parent(s), tuteur(s) légal(aux),</p>
                 
-                <p>L'établissement <strong>hybrilink</strong> vous adresse ce communiqué concernant le règlement de <strong>${communiqueData.feeType}</strong> pour l'année scolaire <strong>${communiqueData.schoolYear}</strong>.</p>
+                <p>L'établissement <strong>Complexe Scolaire la Colombe</strong> vous adresse ce communiqué concernant le règlement de <strong>${communiqueData.feeType || 'frais'}</strong> pour l'année scolaire <strong>${communiqueData.schoolYear || ''}</strong>.</p>
                 
-                <p>Nous vous rappelons que la date limite pour le paiement du solde de <strong>${communiqueData.feeType}</strong> pour le mois de <strong>${communiqueData.month}</strong> est fixée au <strong>${formattedDeadline}</strong>.</p>
+                <p>Nous vous rappelons que la date limite pour le paiement du solde de <strong>${communiqueData.feeType || 'frais'}</strong> pour le mois de <strong>${communiqueData.month || ''}</strong> est fixée au <strong>${formattedDeadline}</strong>.</p>
                 
                 <p><strong>Détail des montants dus :</strong></p>
                 
                 <ul>
                     ${selectedChild && selectedChild !== 'all'
-                        ? `<li>Frais de ${communiqueData.feeType.toLowerCase()} pour ${childrenDetails[0].name} : <strong>$${montantParEnfant}</strong></li>`
+                        ? `<li>Frais de ${(communiqueData.feeType || 'frais').toLowerCase()} pour ${childrenDetails[0].name} : <strong>$${montantParEnfant}</strong></li>`
                         : childrenDetails.map((child, index) => 
-                            `<li>Frais de ${communiqueData.feeType.toLowerCase()} pour ${child.name} (${child.class}) : <strong>$${montantParEnfant}</strong></li>`
+                            `<li>Frais de ${(communiqueData.feeType || 'frais').toLowerCase()} pour ${child.name} (${child.class}) : <strong>$${montantParEnfant}</strong></li>`
                         ).join('')
                     }
                     ${childrenDetails.length > 1 && (!selectedChild || selectedChild === 'all')
-                        ? `<li><strong>TOTAL :</strong> $${parseFloat(communiqueData.amount).toFixed(2)}</li>`
+                        ? `<li><strong>TOTAL :</strong> $${parseFloat(communiqueData.amount || 0).toFixed(2)}</li>`
                         : ''
                     }
                 </ul>
                 
                 ${communiqueData.message ? `<p><strong>Message additionnel :</strong> ${communiqueData.message}</p>` : ''}
                 
-                <p>Classes concernées par ce communiqué : ${communiqueData.classes.join(', ')}</p>
+                <p>Classes concernées par ce communiqué : ${communiqueData.classes ? communiqueData.classes.join(', ') : 'Non spécifié'}</p>
                 
                 <p>Nous vous remercions de votre compréhension et de votre collaboration.</p>
                 
@@ -3851,7 +4026,8 @@ window.viewFullCommunique = async function(communiqueId) {
             </div>
         `;
         
-        document.getElementById('communique-full-content').innerHTML = fullContentHTML;
+        const communiqueFullContent = document.getElementById('communique-full-content');
+        if (communiqueFullContent) communiqueFullContent.innerHTML = fullContentHTML;
         
         window.currentCommuniqueForPrint = {
             id: communiqueId,
@@ -3862,7 +4038,8 @@ window.viewFullCommunique = async function(communiqueId) {
             montantParEnfant: montantParEnfant
         };
         
-        document.getElementById('communique-full-modal').classList.remove('hidden');
+        const modal = document.getElementById('communique-full-modal');
+        if (modal) modal.classList.remove('hidden');
         
     } catch (error) {
         console.error('Erreur affichage communiqué:', error);
@@ -3897,22 +4074,24 @@ window.printCommuniqueForParent = async function(communiqueId) {
         const relationData = relationSnap.docs[0].data();
         
         const childrenDetails = [];
-        for (const studentMatricule of relationData.studentIds) {
-            let studentDoc = await getDoc(doc(db, 'students', studentMatricule));
-            if (!studentDoc.exists()) {
-                studentDoc = await getDoc(doc(db, 'primary_students', studentMatricule));
-            }
-            if (!studentDoc.exists()) {
-                studentDoc = await getDoc(doc(db, 'kindergarten_students', studentMatricule));
-            }
-            
-            if (studentDoc.exists()) {
-                const studentData = studentDoc.data();
-                childrenDetails.push({
-                    name: studentData.fullName,
-                    matricule: studentMatricule,
-                    class: studentData.class
-                });
+        if (relationData.studentIds) {
+            for (const studentMatricule of relationData.studentIds) {
+                let studentDoc = await getDoc(doc(db, 'students', studentMatricule));
+                if (!studentDoc.exists()) {
+                    studentDoc = await getDoc(doc(db, 'primary_students', studentMatricule));
+                }
+                if (!studentDoc.exists()) {
+                    studentDoc = await getDoc(doc(db, 'kindergarten_students', studentMatricule));
+                }
+                
+                if (studentDoc.exists()) {
+                    const studentData = studentDoc.data();
+                    childrenDetails.push({
+                        name: studentData.fullName,
+                        matricule: studentMatricule,
+                        class: studentData.class
+                    });
+                }
             }
         }
         
@@ -3957,7 +4136,7 @@ window.printCommuniqueForParent = async function(communiqueId) {
                     <div class="title">COMMUNIQUE DE PAIEMENT</div>
                     <div>Complexe Scolaire la Colombe</div>
                     <div>Lubumbashi, République Démocratique du Congo</div>
-                    <div>Tél: +243 XXX XXX XXX</div>
+                    <div>Tél: +243 097 187 758</div>
                 </div>
                 
                 <div class="date">
@@ -3983,23 +4162,23 @@ window.printCommuniqueForParent = async function(communiqueId) {
                 </div>
                 
                 <div>
-                    <p><strong>Objet :</strong> Rappel concernant le paiement de <strong>${communiqueData.feeType}</strong></p>
+                    <p><strong>Objet :</strong> Rappel concernant le paiement de <strong>${communiqueData.feeType || 'frais'}</strong></p>
                     
                     <p>Cher(s) parent(s), tuteur(s) légal(aux),</p>
                     
-                    <p>L'établissement <strong>Complexe Scolaire la Colombe</strong> vous adresse ce communiqué concernant le règlement de <strong>${communiqueData.feeType}</strong> pour l'année scolaire <strong>${communiqueData.schoolYear}</strong>.</p>
+                    <p>L'établissement <strong>Complexe Scolaire la Colombe</strong> vous adresse ce communiqué concernant le règlement de <strong>${communiqueData.feeType || 'frais'}</strong> pour l'année scolaire <strong>${communiqueData.schoolYear || ''}</strong>.</p>
                     
-                    <p>Nous vous rappelons que la date limite pour le paiement du solde des frais de <strong>${communiqueData.feeType}</strong> pour le mois de <strong>${communiqueData.month}</strong> est fixée au <strong>${formattedDeadline}</strong>.</p>
+                    <p>Nous vous rappelons que la date limite pour le paiement du solde des frais de <strong>${communiqueData.feeType || 'frais'}</strong> pour le mois de <strong>${communiqueData.month || ''}</strong> est fixée au <strong>${formattedDeadline}</strong>.</p>
                     
                     <p><strong>Détail des montants dus :</strong></p>
                     
                     <ul>
-                        <li>Frais de ${communiqueData.feeType.toLowerCase()} : <strong>$${parseFloat(communiqueData.amount).toFixed(2)}</strong></li>
+                        <li>Frais de ${(communiqueData.feeType || 'frais').toLowerCase()} : <strong>$${communiqueData.amount ? parseFloat(communiqueData.amount).toFixed(2) : '0.00'}</strong></li>
                     </ul>
                     
                     ${communiqueData.message ? `<p><strong>Message additionnel :</strong> ${communiqueData.message}</p>` : ''}
                     
-                    <p>Classes concernées par ce communiqué : ${communiqueData.classes.join(', ')}</p>
+                    <p>Classes concernées par ce communiqué : ${communiqueData.classes ? communiqueData.classes.join(', ') : 'Non spécifié'}</p>
                     
                     <p>Nous vous remercions de votre compréhension et de votre collaboration.</p>
                     
@@ -4063,10 +4242,14 @@ window.markCommuniqueAsPaid = async function(communiqueId) {
         
         for (const child of childrenList) {
             const studentRelationRef = doc(db, 'student_communique_relations', `${child.matricule}_${communiqueId}`);
-            await updateDoc(studentRelationRef, {
-                status: 'paid',
-                paidAt: serverTimestamp()
-            });
+            try {
+                await updateDoc(studentRelationRef, {
+                    status: 'paid',
+                    paidAt: serverTimestamp()
+                });
+            } catch (e) {
+                // Ignorer si le document n'existe pas
+            }
         }
         
         showAlert('Communiqué marqué comme payé avec succès.', 'success');
@@ -4082,21 +4265,21 @@ window.markCommuniqueAsPaid = async function(communiqueId) {
 // ============================================
 // FONCTIONS POUR LES PRÉSENCES ET INCIDENTS
 // ============================================
-document.getElementById('presence-child-selector').addEventListener('change', (e) => {
+document.getElementById('presence-child-selector')?.addEventListener('change', (e) => {
     const studentId = e.target.value;
     const content = document.getElementById('presence-incidents-content');
-    if (!studentId) {
-        content.classList.add('hidden');
+    if (!studentId || !content) {
+        if (content) content.classList.add('hidden');
         return;
     }
     content.classList.remove('hidden');
     loadChildIncidents(studentId);
 });
 
-document.getElementById('load-presence-btn').addEventListener('click', () => {
-    const studentId = document.getElementById('presence-child-selector').value;
-    const month = parseInt(document.getElementById('presence-month').value);
-    const year = parseInt(document.getElementById('presence-year').value);
+document.getElementById('load-presence-btn')?.addEventListener('click', () => {
+    const studentId = document.getElementById('presence-child-selector')?.value;
+    const month = parseInt(document.getElementById('presence-month')?.value || '0');
+    const year = parseInt(document.getElementById('presence-year')?.value || new Date().getFullYear().toString());
     
     if (!studentId) {
         showAlert("Veuillez sélectionner un enfant", "error");
@@ -4108,7 +4291,9 @@ document.getElementById('load-presence-btn').addEventListener('click', () => {
 
 async function loadChildMonthlyPresence(studentId, month, year) {
     const container = document.getElementById('monthly-presence-container');
-    container.innerHTML = '<div class="loading"><i class="fas fa-spinner"></i><p>Chargement des présences...</p></div>';
+    if (!container) return;
+    
+    container.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i><p>Chargement des présences...</p></div>';
     
     try {
         const firstDay = new Date(year, month, 1);
@@ -4149,26 +4334,28 @@ async function loadChildMonthlyPresence(studentId, month, year) {
         const statsContainer = document.getElementById('presence-stats');
         const presenceRate = totalDays > 0 ? ((presentCount / totalDays) * 100).toFixed(1) : 0;
         
-        statsContainer.innerHTML = `
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-number" style="color: #2e7d32;">${presentCount}</div>
-                    <div class="stat-label">Présences</div>
+        if (statsContainer) {
+            statsContainer.innerHTML = `
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-number" style="color: #2e7d32;">${presentCount}</div>
+                        <div class="stat-label">Présences</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" style="color: #c62828;">${absentCount}</div>
+                        <div class="stat-label">Absences</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" style="color: #ef6c00;">${lateCount}</div>
+                        <div class="stat-label">Retards</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" style="color: #1565c0;">${presenceRate}%</div>
+                        <div class="stat-label">Taux de présence</div>
+                    </div>
                 </div>
-                <div class="stat-card">
-                    <div class="stat-number" style="color: #c62828;">${absentCount}</div>
-                    <div class="stat-label">Absences</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-number" style="color: #ef6c00;">${lateCount}</div>
-                    <div class="stat-label">Retards</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-number" style="color: #1565c0;">${presenceRate}%</div>
-                    <div class="stat-label">Taux de présence</div>
-                </div>
-            </div>
-        `;
+            `;
+        }
         
         let calendarHTML = `
             <h4 style="margin-bottom: 1rem;">Calendrier des présences - ${getMonthName(month)} ${year}</h4>
@@ -4239,7 +4426,9 @@ async function loadChildMonthlyPresence(studentId, month, year) {
 
 async function loadChildIncidents(studentId) {
     const container = document.getElementById('incidents-list-container');
-    container.innerHTML = '<div class="loading"><i class="fas fa-spinner"></i><p>Chargement des incidents...</p></div>';
+    if (!container) return;
+    
+    container.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i><p>Chargement des incidents...</p></div>';
     
     try {
         const incidentsQuery = query(
@@ -4281,7 +4470,7 @@ async function loadChildIncidents(studentId) {
                     minute: '2-digit'
                 }) : 'Date inconnue';
                 
-                const severityClass = `severity-${incident.severity}`;
+                const severityClass = `severity-${incident.severity || 'moyen'}`;
                 
                 html += `
                     <div class="incident-item ${severityClass}">
@@ -4294,7 +4483,7 @@ async function loadChildIncidents(studentId) {
                         </div>
                         <div>
                             <span class="incident-severity ${severityClass}">
-                                ${getSeverityLabel(incident.severity)}
+                                ${getSeverityLabel(incident.severity || 'moyen')}
                             </span>
                         </div>
                     </div>
@@ -4333,11 +4522,11 @@ async function loadChildIncidents(studentId) {
 // ============================================
 // FONCTIONS POUR LES PAIEMENTS
 // ============================================
-document.getElementById('payment-child-selector').addEventListener('change', (e) => {
+document.getElementById('payment-child-selector')?.addEventListener('change', (e) => {
     const studentId = e.target.value;
     const paymentContent = document.getElementById('payment-content');
-    if (!studentId) {
-        paymentContent.classList.add('hidden');
+    if (!studentId || !paymentContent) {
+        if (paymentContent) paymentContent.classList.add('hidden');
         return;
     }
     paymentContent.classList.remove('hidden');
@@ -4347,32 +4536,43 @@ document.getElementById('payment-child-selector').addEventListener('change', (e)
 
 async function loadPaymentStatus(studentId) {
     const statusContainer = document.getElementById('payment-status-container');
-    statusContainer.innerHTML = "Chargement...";
+    if (!statusContainer) return;
+    
+    statusContainer.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i> Chargement...</div>';
 
-    const paymentsQuery = query(collection(db, 'payments'), where('studentId', '==', studentId));
-    const paymentsSnap = await getDocs(paymentsQuery);
-    const paidMonths = paymentsSnap.docs.map(d => d.data().month);
+    try {
+        const paymentsQuery = query(collection(db, 'payments'), where('studentId', '==', studentId));
+        const paymentsSnap = await getDocs(paymentsQuery);
+        const paidMonths = paymentsSnap.docs.map(d => d.data().month).filter(Boolean);
 
-    statusContainer.innerHTML = paidMonths.length > 0 
-        ? `<p>Mois payés : <strong>${paidMonths.join(', ')}</strong></p>` 
-        : "<p>Aucun paiement enregistré.</p>";
+        statusContainer.innerHTML = paidMonths.length > 0 
+            ? `<p>Mois payés : <strong>${paidMonths.join(', ')}</strong></p>` 
+            : "<p>Aucun paiement enregistré.</p>";
+    } catch (error) {
+        console.error('Erreur chargement paiements:', error);
+        statusContainer.innerHTML = '<p>Erreur de chargement des paiements.</p>';
+    }
 }
 
 function setupPaymentForm(studentId) {
     const student = childrenList.find(c => c.matricule === studentId);
     if (student) {
-        document.getElementById('payment-student-id').value = student.matricule;
-        document.getElementById('payment-student-name').value = student.fullName;
-        document.getElementById('payment-student-class').value = student.class;
+        const paymentStudentId = document.getElementById('payment-student-id');
+        const paymentStudentName = document.getElementById('payment-student-name');
+        const paymentStudentClass = document.getElementById('payment-student-class');
+        
+        if (paymentStudentId) paymentStudentId.value = student.matricule || '';
+        if (paymentStudentName) paymentStudentName.value = student.fullName || '';
+        if (paymentStudentClass) paymentStudentClass.value = student.class || '';
     }
 }
 
-document.getElementById('online-payment-form').addEventListener('submit', async (e) => {
+document.getElementById('online-payment-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const studentId = document.getElementById('payment-student-id').value;
-    const studentName = document.getElementById('payment-student-name').value;
-    const month = document.getElementById('payment-month').value;
-    const amount = parseInt(document.getElementById('payment-amount').value);
+    const studentId = document.getElementById('payment-student-id')?.value;
+    const studentName = document.getElementById('payment-student-name')?.value;
+    const month = document.getElementById('payment-month')?.value;
+    const amount = parseInt(document.getElementById('payment-amount')?.value || '0');
     
     if (!studentId || !studentName || !month || !amount) {
         showAlert("Veuillez remplir tous les champs", "error");
@@ -4393,61 +4593,71 @@ document.getElementById('online-payment-form').addEventListener('submit', async 
             createdAt: serverTimestamp()
         });
 
-        document.getElementById('generated-code').textContent = paymentCode;
+        const generatedCode = document.getElementById('generated-code');
+        if (generatedCode) generatedCode.textContent = paymentCode;
         
         const receiptPreview = document.getElementById('receipt-preview');
-        receiptPreview.innerHTML = `
-            <div class="receipt">
-                <div class="receipt-header">
-                    <div class="receipt-logo">
-                        <h2>CS LA COLOMBE</h2>
+        if (receiptPreview) {
+            receiptPreview.innerHTML = `
+                <div class="receipt">
+                    <div class="receipt-header">
+                        <div class="receipt-logo">
+                            <h2>CS LA COLOMBE</h2>
+                        </div>
+                        <div class="receipt-title">DEMANDE DE PAIEMENT</div>
+                        <div>Complexe Scolaire la Colombe</div>
+                        <div>Code: ${paymentCode}</div>
                     </div>
-                    <div class="receipt-title">DEMANDE DE PAIEMENT</div>
-                    <div>Complexe Scolaire la Colombe</div>
-                    <div>Code: ${paymentCode}</div>
+                    
+                    <div class="receipt-details">
+                        <div class="receipt-row">
+                            <span>Élève:</span>
+                            <span>${studentName}</span>
+                        </div>
+                        <div class="receipt-row">
+                            <span>Mois:</span>
+                            <span>${month}</span>
+                        </div>
+                        <div class="receipt-row">
+                            <span>Montant:</span>
+                            <span>${amount.toLocaleString()} FCFA</span>
+                        </div>
+                        <div class="receipt-divider"></div>
+                        <div class="receipt-row">
+                            <span>Date:</span>
+                            <span>${new Date().toLocaleDateString('fr-FR')}</span>
+                        </div>
+                        <div class="receipt-row">
+                            <span>Parent:</span>
+                            <span>${currentParent.fullName}</span>
+                        </div>
+                    </div>
+                    
+                    <div class="receipt-footer">
+                        <p>Présentez ce document au secrétariat pour finaliser le paiement</p>
+                        <p>Complexe Scolaire la Colombe</p>
+                    </div>
                 </div>
-                
-                <div class="receipt-details">
-                    <div class="receipt-row">
-                        <span>Élève:</span>
-                        <span>${studentName}</span>
-                    </div>
-                    <div class="receipt-row">
-                        <span>Mois:</span>
-                        <span>${month}</span>
-                    </div>
-                    <div class="receipt-row">
-                        <span>Montant:</span>
-                        <span>${amount.toLocaleString()} FCFA</span>
-                    </div>
-                    <div class="receipt-divider"></div>
-                    <div class="receipt-row">
-                        <span>Date:</span>
-                        <span>${new Date().toLocaleDateString('fr-FR')}</span>
-                    </div>
-                    <div class="receipt-row">
-                        <span>Parent:</span>
-                        <span>${currentParent.fullName}</span>
-                    </div>
-                </div>
-                
-                <div class="receipt-footer">
-                    <p>Présentez ce document au secrétariat pour finaliser le paiement</p>
-                    <p>Complexe Scolaire la Colombe</p>
-                </div>
-            </div>
-        `;
+            `;
+        }
         
-        document.getElementById('payment-code-modal').classList.remove('hidden');
-        document.getElementById('online-payment-form').reset();
+        const modal = document.getElementById('payment-code-modal');
+        if (modal) modal.classList.remove('hidden');
+        
+        const form = document.getElementById('online-payment-form');
+        if (form) form.reset();
         
     } catch (error) {
+        console.error('Erreur demande paiement:', error);
         showAlert('Erreur lors de la demande de paiement: ' + error.message, 'error');
     }
 });
 
-document.getElementById('download-receipt-btn').addEventListener('click', () => {
-    const receiptContent = document.getElementById('receipt-preview').innerHTML;
+document.getElementById('download-receipt-btn')?.addEventListener('click', () => {
+    const receiptPreview = document.getElementById('receipt-preview');
+    if (!receiptPreview) return;
+    
+    const receiptContent = receiptPreview.innerHTML;
     const printWindow = window.open('', '_blank');
     printWindow.document.write(`
         <html>
@@ -4479,33 +4689,33 @@ document.getElementById('download-receipt-btn').addEventListener('click', () => 
 // ============================================
 // FONCTIONS POUR LES DEVOIRS
 // ============================================
-document.getElementById('secondary-homework-child-selector').addEventListener('change', (e) => {
+document.getElementById('secondary-homework-child-selector')?.addEventListener('change', (e) => {
     const studentId = e.target.value;
     const homeworkContent = document.getElementById('secondary-homework-content');
-    if (!studentId) {
-        homeworkContent.classList.add('hidden');
+    if (!studentId || !homeworkContent) {
+        if (homeworkContent) homeworkContent.classList.add('hidden');
         return;
     }
     homeworkContent.classList.remove('hidden');
     loadSecondaryHomework(studentId);
 });
 
-document.getElementById('primary-homework-child-selector').addEventListener('change', (e) => {
+document.getElementById('primary-homework-child-selector')?.addEventListener('change', (e) => {
     const studentId = e.target.value;
     const homeworkContent = document.getElementById('primary-homework-content');
-    if (!studentId) {
-        homeworkContent.classList.add('hidden');
+    if (!studentId || !homeworkContent) {
+        if (homeworkContent) homeworkContent.classList.add('hidden');
         return;
     }
     homeworkContent.classList.remove('hidden');
     loadPrimaryHomework(studentId);
 });
 
-document.getElementById('kindergarten-homework-child-selector').addEventListener('change', (e) => {
+document.getElementById('kindergarten-homework-child-selector')?.addEventListener('change', (e) => {
     const studentId = e.target.value;
     const homeworkContent = document.getElementById('kindergarten-homework-content');
-    if (!studentId) {
-        homeworkContent.classList.add('hidden');
+    if (!studentId || !homeworkContent) {
+        if (homeworkContent) homeworkContent.classList.add('hidden');
         return;
     }
     homeworkContent.classList.remove('hidden');
@@ -4513,13 +4723,17 @@ document.getElementById('kindergarten-homework-child-selector').addEventListener
 });
 
 function setupHomeworkTabs() {
-    document.querySelectorAll('#secondary-homework-content .tab').forEach(tab => {
+    const tabs = document.querySelectorAll('#secondary-homework-content .tab');
+    tabs.forEach(tab => {
         tab.addEventListener('click', () => {
-            document.querySelectorAll('#secondary-homework-content .tab, #secondary-homework-content .tab-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('#secondary-homework-content .tab, #secondary-homework-content .tab-content').forEach(el => {
+                if (el) el.classList.remove('active');
+            });
             tab.classList.add('active');
-            document.getElementById(tab.dataset.tab + '-tab').classList.add('active');
+            const tabContent = document.getElementById(tab.dataset.tab + '-tab');
+            if (tabContent) tabContent.classList.add('active');
             
-            const studentId = document.getElementById('secondary-homework-child-selector').value;
+            const studentId = document.getElementById('secondary-homework-child-selector')?.value;
             if (studentId) {
                 if (tab.dataset.tab === 'pending') {
                     loadPendingHomework(studentId);
@@ -4538,6 +4752,7 @@ async function loadSecondaryHomework(studentId) {
 async function loadPendingHomework(studentId) {
     showLoading('pending-homework-loading');
     const container = document.getElementById('pending-homework-container');
+    if (!container) return;
     
     try {
         const child = childrenList.find(c => c.matricule === studentId);
@@ -4655,6 +4870,7 @@ async function loadPendingHomework(studentId) {
 async function loadSubmittedHomework(studentId) {
     showLoading('submitted-homework-loading');
     const container = document.getElementById('submitted-homework-container');
+    if (!container) return;
     
     try {
         const child = childrenList.find(c => c.matricule === studentId);
@@ -4786,6 +5002,7 @@ async function loadSubmittedHomework(studentId) {
 async function loadPrimaryHomework(studentId) {
     showLoading('primary-homework-loading');
     const container = document.getElementById('primary-homework-container');
+    if (!container) return;
     
     try {
         const child = childrenList.find(c => c.matricule === studentId);
@@ -4869,6 +5086,7 @@ async function loadPrimaryHomework(studentId) {
 async function loadKindergartenHomework(studentId) {
     showLoading('kindergarten-homework-loading');
     const container = document.getElementById('kindergarten-homework-container');
+    if (!container) return;
     
     try {
         const child = childrenList.find(c => c.matricule === studentId);
@@ -4998,6 +5216,7 @@ async function loadKindergartenHomework(studentId) {
 }
 
 function getFileIconForParent(fileType) {
+    if (!fileType) return 'fa-file text-muted';
     if (fileType.includes('pdf')) return 'fa-file-pdf text-danger';
     if (fileType.includes('word') || fileType.includes('document')) return 'fa-file-word text-primary';
     if (fileType.includes('excel') || fileType.includes('spreadsheet')) return 'fa-file-excel text-success';
@@ -5050,11 +5269,11 @@ window.markHomeworkAsRead = async function(homeworkId) {
 // ============================================
 // FONCTIONS POUR LE TABLEAU DE BORD
 // ============================================
-document.getElementById('child-selector').addEventListener('change', (e) => {
+document.getElementById('child-selector')?.addEventListener('change', (e) => {
     const studentId = e.target.value;
     const dashboardContent = document.getElementById('child-dashboard-content');
-    if (!studentId) {
-        dashboardContent.classList.add('hidden');
+    if (!studentId || !dashboardContent) {
+        if (dashboardContent) dashboardContent.classList.add('hidden');
         return;
     }
     dashboardContent.classList.remove('hidden');
@@ -5074,72 +5293,85 @@ async function loadChildDashboard(studentId) {
     }
     
     const attendanceContainer = document.getElementById('attendance-container');
-    attendanceContainer.innerHTML = "Chargement...";
+    if (attendanceContainer) attendanceContainer.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i> Chargement...</div>';
     
-    const attQuery = query(collection(db, 'student_attendance'), where('studentId', '==', studentId));
-    const attSnap = await getDocs(attQuery);
-    
-    let presentCount = 0;
-    let totalCount = 0;
-    
-    attSnap.forEach(doc => {
-        const attendanceData = doc.data();
-        if (attendanceData.published === true) {
-            totalCount++;
-            if (attendanceData.status === 'present') {
-                presentCount++;
+    try {
+        const attQuery = query(collection(db, 'student_attendance'), where('studentId', '==', studentId));
+        const attSnap = await getDocs(attQuery);
+        
+        let presentCount = 0;
+        let totalCount = 0;
+        
+        attSnap.forEach(doc => {
+            const attendanceData = doc.data();
+            if (attendanceData.published === true) {
+                totalCount++;
+                if (attendanceData.status === 'present') {
+                    presentCount++;
+                }
             }
+        });
+        
+        const attendanceRate = totalCount > 0 ? (presentCount / totalCount * 100).toFixed(0) : 0;
+        if (attendanceContainer) {
+            attendanceContainer.innerHTML = `
+                <p>Taux de présence: <strong>${attendanceRate}%</strong></p>
+                <p>Présences: ${presentCount} / ${totalCount}</p>
+            `;
         }
-    });
-    
-    const attendanceRate = totalCount > 0 ? (presentCount / totalCount * 100).toFixed(0) : 0;
-    attendanceContainer.innerHTML = `
-        <p>Taux de présence: <strong>${attendanceRate}%</strong></p>
-        <p>Présences: ${presentCount} / ${totalCount}</p>
-    `;
+    } catch (error) {
+        console.error('Erreur chargement présences:', error);
+        if (attendanceContainer) attendanceContainer.innerHTML = '<p>Erreur de chargement des présences</p>';
+    }
     
     const homeworkContainer = document.getElementById('homework-container');
-    homeworkContainer.innerHTML = "Chargement...";
+    if (homeworkContainer) homeworkContainer.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i> Chargement...</div>';
     
-    if (child.type === 'secondary') {
-        const hwQuery = query(collection(db, 'homework'), where('className', '==', child.class), orderBy('dueDate', 'desc'), limit(5));
-        const hwSnap = await getDocs(hwQuery);
-        
-        if (hwSnap.empty) {
-            homeworkContainer.innerHTML = "<p>Aucun devoir récent.</p>";
+    try {
+        if (child.type === 'secondary') {
+            const hwQuery = query(collection(db, 'homework'), where('className', '==', child.class), orderBy('dueDate', 'desc'), limit(5));
+            const hwSnap = await getDocs(hwQuery);
+            
+            if (hwSnap.empty) {
+                if (homeworkContainer) homeworkContainer.innerHTML = "<p>Aucun devoir récent.</p>";
+            } else {
+                let html = '<ul>';
+                hwSnap.forEach(doc => {
+                    const hw = doc.data();
+                    const dueDate = hw.dueDate ? new Date(hw.dueDate.toDate()).toLocaleDateString('fr-FR') : 'Non spécifiée';
+                    html += `<li><strong>${hw.subject}:</strong> ${hw.title} (à rendre le ${dueDate})</li>`;
+                });
+                html += '</ul>';
+                if (homeworkContainer) homeworkContainer.innerHTML = html;
+            }
+        } else if (child.type === 'primary') {
+            const hwQuery = query(collection(db, 'homework'), where('className', '==', child.class), orderBy('createdAt', 'desc'), limit(5));
+            const hwSnap = await getDocs(hwQuery);
+            
+            if (hwSnap.empty) {
+                if (homeworkContainer) homeworkContainer.innerHTML = "<p>Aucun devoir récent.</p>";
+            } else {
+                let html = '<ul>';
+                hwSnap.forEach(doc => {
+                    const hw = doc.data();
+                    const dueDate = hw.dueDate ? new Date(hw.dueDate.toDate()).toLocaleDateString('fr-FR') : 'Non spécifiée';
+                    html += `<li><strong>${hw.subject}:</strong> ${hw.title} (pour le ${dueDate})</li>`;
+                });
+                html += '</ul>';
+                if (homeworkContainer) homeworkContainer.innerHTML = html;
+            }
         } else {
-            let html = '<ul>';
-            hwSnap.forEach(doc => {
-                const hw = doc.data();
-                const dueDate = hw.dueDate ? new Date(hw.dueDate.toDate()).toLocaleDateString('fr-FR') : 'Non spécifiée';
-                html += `<li><strong>${hw.subject}:</strong> ${hw.title} (à rendre le ${dueDate})</li>`;
-            });
-            html += '</ul>';
-            homeworkContainer.innerHTML = html;
+            if (homeworkContainer) homeworkContainer.innerHTML = "<p>Les devoirs de la maternelle ne sont pas encore disponibles.</p>";
         }
-    } else if (child.type === 'primary') {
-        const hwQuery = query(collection(db, 'homework'), where('className', '==', child.class), orderBy('createdAt', 'desc'), limit(5));
-        const hwSnap = await getDocs(hwQuery);
-        
-        if (hwSnap.empty) {
-            homeworkContainer.innerHTML = "<p>Aucun devoir récent.</p>";
-        } else {
-            let html = '<ul>';
-            hwSnap.forEach(doc => {
-                const hw = doc.data();
-                const dueDate = hw.dueDate ? new Date(hw.dueDate.toDate()).toLocaleDateString('fr-FR') : 'Non spécifiée';
-                html += `<li><strong>${hw.subject}:</strong> ${hw.title} (pour le ${dueDate})</li>`;
-            });
-            html += '</ul>';
-            homeworkContainer.innerHTML = html;
-        }
-    } else {
-        homeworkContainer.innerHTML = "<p>Les devoirs de la maternelle ne sont pas encore disponibles.</p>";
+    } catch (error) {
+        console.error('Erreur chargement devoirs tableau de bord:', error);
+        if (homeworkContainer) homeworkContainer.innerHTML = '<p>Erreur de chargement des devoirs</p>';
     }
 }
 
 async function loadPrimaryGradesForDashboard(studentId, period) {
     const tableBody = document.getElementById('child-grades-table-body');
+    if (!tableBody) return;
     
     try {
         const child = childrenList.find(c => c.matricule === studentId);
@@ -5165,14 +5397,16 @@ async function loadPrimaryGradesForDashboard(studentId, period) {
         
         gradesSnap.forEach(doc => {
             const gradeData = doc.data();
-            gradeData.grades.forEach(courseGrade => {
-                allGrades.push({
-                    courseName: courseGrade.courseName,
-                    maxGrade: courseGrade.maxGrade,
-                    obtainedGrade: courseGrade.obtainedGrade,
-                    teacherName: courseGrade.teacherName
+            if (gradeData.grades && Array.isArray(gradeData.grades)) {
+                gradeData.grades.forEach(courseGrade => {
+                    allGrades.push({
+                        courseName: courseGrade.courseName,
+                        maxGrade: courseGrade.maxGrade,
+                        obtainedGrade: courseGrade.obtainedGrade,
+                        teacherName: courseGrade.teacherName
+                    });
                 });
-            });
+            }
         });
         
         if (allGrades.length === 0) {
@@ -5184,7 +5418,7 @@ async function loadPrimaryGradesForDashboard(studentId, period) {
         
         let html = '';
         allGrades.forEach((grade, index) => {
-            const percentage = (grade.obtainedGrade / grade.maxGrade) * 100;
+            const percentage = grade.maxGrade > 0 ? (grade.obtainedGrade / grade.maxGrade) * 100 : 0;
             const gradeClass = percentage >= 50 ? 'grade-green' : 'grade-red';
             
             html += `
@@ -5193,7 +5427,7 @@ async function loadPrimaryGradesForDashboard(studentId, period) {
                     <td>${grade.courseName}</td>
                     <td>${grade.maxGrade}</td>
                     <td class="${gradeClass}">${grade.obtainedGrade}</td>
-                    <td>${grade.teacherName}</td>
+                    <td>${grade.teacherName || 'Non spécifié'}</td>
                     <td>Primaire</td>
                 </tr>
             `;
@@ -5209,6 +5443,7 @@ async function loadPrimaryGradesForDashboard(studentId, period) {
 
 async function loadKindergartenGradesForDashboard(studentId) {
     const tableBody = document.getElementById('child-grades-table-body');
+    if (!tableBody) return;
     
     try {
         const child = childrenList.find(c => c.matricule === studentId);
@@ -5247,7 +5482,7 @@ async function loadKindergartenGradesForDashboard(studentId) {
             const evaluationDate = gradeData.evaluationDate ? 
                 new Date(gradeData.evaluationDate.toDate()).toLocaleDateString('fr-FR') : 'Non spécifiée';
             
-            const levelText = levels[gradeData.level] || gradeData.level;
+            const levelText = levels[gradeData.level] || gradeData.level || 'Non spécifié';
             const levelClass = gradeData.level === 'excellent' || gradeData.level === 'tres_bien' ? 'grade-green' : 
                              gradeData.level === 'insuffisant' ? 'grade-red' : '';
             
@@ -5276,14 +5511,15 @@ async function loadKindergartenGradesForDashboard(studentId) {
 // FONCTIONS POUR LES COTES SECONDAIRES
 // ============================================
 function setupSecondaryGradesPeriods() {
-    document.querySelectorAll('#secondary-grades-content .period-btn').forEach(btn => {
+    const periodBtns = document.querySelectorAll('#secondary-grades-content .period-btn');
+    periodBtns.forEach(btn => {
         btn.addEventListener('click', function() {
             document.querySelectorAll('#secondary-grades-content .period-btn').forEach(b => b.classList.remove('active'));
             this.classList.add('active');
             
             currentGradesPeriod = this.getAttribute('data-period');
             
-            const studentId = document.getElementById('secondary-grades-child-selector').value;
+            const studentId = document.getElementById('secondary-grades-child-selector')?.value;
             if (studentId) {
                 loadChildProclamationData(studentId, currentGradesPeriod);
             }
@@ -5291,11 +5527,11 @@ function setupSecondaryGradesPeriods() {
     });
 }
 
-document.getElementById('secondary-grades-child-selector').addEventListener('change', (e) => {
+document.getElementById('secondary-grades-child-selector')?.addEventListener('change', (e) => {
     const studentId = e.target.value;
     const gradesContent = document.getElementById('secondary-grades-content');
-    if (!studentId) {
-        gradesContent.classList.add('hidden');
+    if (!studentId || !gradesContent) {
+        if (gradesContent) gradesContent.classList.add('hidden');
         return;
     }
     gradesContent.classList.remove('hidden');
@@ -5310,9 +5546,9 @@ async function loadChildProclamationData(studentId, period) {
     const selectedPeriodName = document.getElementById('selected-period-name');
     const periodCalculationInfo = document.getElementById('period-calculation-info');
     
-    tableContainer.classList.add('hidden');
-    noGradesMessage.classList.add('hidden');
-    periodInfoCard.classList.add('hidden');
+    if (tableContainer) tableContainer.classList.add('hidden');
+    if (noGradesMessage) noGradesMessage.classList.add('hidden');
+    if (periodInfoCard) periodInfoCard.classList.add('hidden');
     
     try {
         const child = childrenList.find(c => c.matricule === studentId);
@@ -5320,18 +5556,20 @@ async function loadChildProclamationData(studentId, period) {
             throw new Error('Enfant non trouvé ou non du secondaire');
         }
         
-        periodInfoCard.classList.remove('hidden');
-        selectedPeriodName.textContent = getPeriodNameForParent(period);
-        periodCalculationInfo.textContent = getPeriodCalculationInfoForParent(period);
+        if (periodInfoCard) periodInfoCard.classList.remove('hidden');
+        if (selectedPeriodName) selectedPeriodName.textContent = getPeriodNameForParent(period);
+        if (periodCalculationInfo) periodCalculationInfo.textContent = getPeriodCalculationInfoForParent(period);
+        
+        const autoCalcInfo = document.getElementById('period-auto-calc-info');
         
         if (period === 'TOTAL_S1' || period === 'TOTAL_S2' || period === 'TOTAL_GENERAL') {
-            document.getElementById('period-auto-calc-info').classList.remove('hidden');
+            if (autoCalcInfo) autoCalcInfo.classList.remove('hidden');
             
             const calculatedData = await calculateAutomaticTotals(studentId, period);
             
-            if (!calculatedData || Object.keys(calculatedData.coursesData).length === 0) {
+            if (!calculatedData || Object.keys(calculatedData.coursesData || {}).length === 0) {
                 hideLoading('secondary-grades-loading');
-                noGradesMessage.classList.remove('hidden');
+                if (noGradesMessage) noGradesMessage.classList.remove('hidden');
                 return;
             }
             
@@ -5340,8 +5578,10 @@ async function loadChildProclamationData(studentId, period) {
             displayChildProclamationTableWithTotals(child, calculatedData, period);
             
             hideLoading('secondary-grades-loading');
-            tableContainer.classList.remove('hidden');
-            document.getElementById('child-name-header').textContent = child.fullName;
+            if (tableContainer) tableContainer.classList.remove('hidden');
+            
+            const childNameHeader = document.getElementById('child-name-header');
+            if (childNameHeader) childNameHeader.textContent = child.fullName;
             
             return;
         }
@@ -5356,7 +5596,7 @@ async function loadChildProclamationData(studentId, period) {
         
         if (gradesSnap.empty) {
             hideLoading('secondary-grades-loading');
-            noGradesMessage.classList.remove('hidden');
+            if (noGradesMessage) noGradesMessage.classList.remove('hidden');
             return;
         }
         
@@ -5367,7 +5607,7 @@ async function loadChildProclamationData(studentId, period) {
             const gradeData = doc.data();
             const courseName = gradeData.subject;
             
-            const studentGrade = gradeData.grades.find(g => g.studentMatricule === studentId);
+            const studentGrade = gradeData.grades ? gradeData.grades.find(g => g.studentMatricule === studentId) : null;
             
             if (studentGrade) {
                 childFound = true;
@@ -5395,7 +5635,7 @@ async function loadChildProclamationData(studentId, period) {
         
         if (!childFound) {
             hideLoading('secondary-grades-loading');
-            noGradesMessage.classList.remove('hidden');
+            if (noGradesMessage) noGradesMessage.classList.remove('hidden');
             return;
         }
         
@@ -5409,22 +5649,26 @@ async function loadChildProclamationData(studentId, period) {
         displayChildProclamationTable(child, coursesData, period);
         
         hideLoading('secondary-grades-loading');
-        tableContainer.classList.remove('hidden');
-        document.getElementById('child-name-header').textContent = child.fullName;
+        if (tableContainer) tableContainer.classList.remove('hidden');
+        
+        const childNameHeader = document.getElementById('child-name-header');
+        if (childNameHeader) childNameHeader.textContent = child.fullName;
         
     } catch (error) {
         console.error('Erreur chargement proclamation enfant:', error);
         hideLoading('secondary-grades-loading');
         
         const container = document.getElementById('grades-proclamation-table-container');
-        container.innerHTML = `
-            <div class="no-data">
-                <i class="fas fa-exclamation-triangle"></i>
-                <h3>Erreur de chargement</h3>
-                <p>${error.message}</p>
-            </div>
-        `;
-        tableContainer.classList.remove('hidden');
+        if (container) {
+            container.innerHTML = `
+                <div class="no-data">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <h3>Erreur de chargement</h3>
+                    <p>${error.message}</p>
+                </div>
+            `;
+        }
+        if (tableContainer) tableContainer.classList.remove('hidden');
     }
 }
 
@@ -5465,6 +5709,7 @@ async function calculateAutomaticTotals(childId, period) {
 
 async function calculateSemesterTotal(childId, targetPeriod, sourcePeriods, totalData) {
     const child = childrenList.find(c => c.matricule === childId);
+    if (!child) return;
     
     for (const sourcePeriod of sourcePeriods) {
         const gradesQuery = query(
@@ -5479,7 +5724,7 @@ async function calculateSemesterTotal(childId, targetPeriod, sourcePeriods, tota
             const gradeData = doc.data();
             const courseName = gradeData.subject;
             
-            const studentGrade = gradeData.grades.find(g => g.studentMatricule === childId);
+            const studentGrade = gradeData.grades ? gradeData.grades.find(g => g.studentMatricule === childId) : null;
             
             if (studentGrade) {
                 if (!totalData.coursesData[courseName]) {
@@ -5568,6 +5813,8 @@ async function calculateGeneralTotal(childId, totalData) {
 
 function displayChildProclamationTable(child, coursesData, period) {
     const container = document.getElementById('grades-proclamation-table-container');
+    if (!container) return;
+    
     const courseNames = Object.keys(coursesData);
     
     if (courseNames.length === 0) {
@@ -5677,7 +5924,9 @@ function displayChildProclamationTable(child, coursesData, period) {
 
 function displayChildProclamationTableWithTotals(child, calculatedData, period) {
     const container = document.getElementById('grades-proclamation-table-container');
-    const courseNames = Object.keys(calculatedData.coursesData);
+    if (!container) return;
+    
+    const courseNames = Object.keys(calculatedData.coursesData || {});
     
     if (courseNames.length === 0) {
         container.innerHTML = '<p>Aucune donnée disponible pour cette période.</p>';
@@ -5871,7 +6120,7 @@ function setupPrimaryPeriods() {
             this.classList.add('active');
             currentPrimaryPeriod = this.dataset.period;
             
-            const studentId = document.getElementById('primary-grades-child-selector').value;
+            const studentId = document.getElementById('primary-grades-child-selector')?.value;
             if (studentId) {
                 loadPrimaryGrades(studentId, currentPrimaryPeriod);
             }
@@ -5879,11 +6128,11 @@ function setupPrimaryPeriods() {
     });
 }
 
-document.getElementById('primary-grades-child-selector').addEventListener('change', (e) => {
+document.getElementById('primary-grades-child-selector')?.addEventListener('change', (e) => {
     const studentId = e.target.value;
     const gradesContent = document.getElementById('primary-grades-content');
-    if (!studentId) {
-        gradesContent.classList.add('hidden');
+    if (!studentId || !gradesContent) {
+        if (gradesContent) gradesContent.classList.add('hidden');
         return;
     }
     gradesContent.classList.remove('hidden');
@@ -5894,6 +6143,8 @@ document.getElementById('primary-grades-child-selector').addEventListener('chang
 async function loadPrimaryGrades(studentId, period) {
     showLoading('primary-grades-loading');
     const container = document.getElementById('primary-grades-container');
+    if (!container) return;
+    
     container.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i><p>Chargement des cotes...</p></div>';
     
     try {
@@ -6048,11 +6299,11 @@ async function loadPrimaryGrades(studentId, period) {
 // ============================================
 // FONCTIONS POUR LES COTES MATERNELLES
 // ============================================
-document.getElementById('kindergarten-grades-child-selector').addEventListener('change', (e) => {
+document.getElementById('kindergarten-grades-child-selector')?.addEventListener('change', (e) => {
     const studentId = e.target.value;
     const gradesContent = document.getElementById('kindergarten-grades-content');
-    if (!studentId) {
-        gradesContent.classList.add('hidden');
+    if (!studentId || !gradesContent) {
+        if (gradesContent) gradesContent.classList.add('hidden');
         return;
     }
     gradesContent.classList.remove('hidden');
@@ -6062,6 +6313,7 @@ document.getElementById('kindergarten-grades-child-selector').addEventListener('
 async function loadKindergartenGrades(studentId) {
     showLoading('kindergarten-grades-loading');
     const tableBody = document.getElementById('kindergarten-grades-table-body');
+    if (!tableBody) return;
     
     try {
         const child = childrenList.find(c => c.matricule === studentId);
@@ -6110,7 +6362,7 @@ async function loadKindergartenGrades(studentId) {
             const evaluationDate = gradeData.evaluationDate ? 
                 new Date(gradeData.evaluationDate.toDate()).toLocaleDateString('fr-FR') : 'Non spécifiée';
             
-            const levelText = levels[gradeData.level] || gradeData.level;
+            const levelText = levels[gradeData.level] || gradeData.level || 'Non spécifié';
             const levelClass = gradeData.level === 'excellent' || gradeData.level === 'tres_bien' ? 'grade-green' : 
                              gradeData.level === 'insuffisant' ? 'grade-red' : '';
             
@@ -6151,23 +6403,24 @@ async function loadKindergartenGrades(studentId) {
 // ============================================
 // FONCTIONS POUR L'HORAIRE
 // ============================================
-document.getElementById('timetable-child-selector').addEventListener('change', (e) => {
+document.getElementById('timetable-child-selector')?.addEventListener('change', (e) => {
     const studentId = e.target.value;
     const timetableContent = document.getElementById('timetable-content');
-    if (!studentId) {
-        timetableContent.classList.add('hidden');
+    if (!studentId || !timetableContent) {
+        if (timetableContent) timetableContent.classList.add('hidden');
         return;
     }
     timetableContent.classList.remove('hidden');
 });
 
-document.getElementById('load-timetable-btn').addEventListener('click', loadTimetable);
+document.getElementById('load-timetable-btn')?.addEventListener('click', loadTimetable);
 
 async function loadTimetable() {
     showLoading('timetable-loading');
     const container = document.getElementById('timetable-display');
+    if (!container) return;
     
-    const studentId = document.getElementById('timetable-child-selector').value;
+    const studentId = document.getElementById('timetable-child-selector')?.value;
     if (!studentId) {
         showAlert("Veuillez sélectionner un enfant", "error");
         hideLoading('timetable-loading');
@@ -6175,8 +6428,8 @@ async function loadTimetable() {
     }
     
     try {
-        const month = document.getElementById('timetable-month').value;
-        const week = document.getElementById('timetable-week').value;
+        const month = document.getElementById('timetable-month')?.value;
+        const week = document.getElementById('timetable-week')?.value;
         
         const child = childrenList.find(c => c.matricule === studentId);
         if (!child) {
@@ -6228,12 +6481,13 @@ async function loadTimetable() {
         
         timetableSnap.forEach(doc => {
             const timetableData = doc.data();
-            const publishedDate = timetableData.publishedAt.toDate().toLocaleDateString('fr-FR');
+            const publishedDate = timetableData.publishedAt ? 
+                timetableData.publishedAt.toDate().toLocaleDateString('fr-FR') : 'Date inconnue';
             
             html += `
                 <div class="timetable-section">
                     <div class="schedule-info">
-                        <h4>Horaire de la classe ${timetableData.className} - Semaine ${timetableData.week} (${timetableData.month})</h4>
+                        <h4>Horaire de la classe ${timetableData.className || ''} - Semaine ${timetableData.week || ''} (${timetableData.month || ''})</h4>
                         <p>Publié le ${publishedDate}</p>
                     </div>
                     <div class="table-container">
@@ -6257,9 +6511,9 @@ async function loadTimetable() {
                 
                 const days = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi'];
                 days.forEach(day => {
-                    const course = timetableData.schedule.find(item => 
+                    const course = timetableData.schedule ? timetableData.schedule.find(item => 
                         item.hour === hour && item.day === day
-                    );
+                    ) : null;
                     html += `<td>${course ? course.course : '-'}</td>`;
                 });
                 
@@ -6293,7 +6547,7 @@ async function loadTimetable() {
 // ============================================
 // FONCTIONS POUR LE PROFIL
 // ============================================
-document.getElementById('profile-photo').addEventListener('change', function(e) {
+document.getElementById('profile-photo')?.addEventListener('change', function(e) {
     const file = e.target.files[0];
     if (file) {
         if (file.size > 5 * 1024 * 1024) {
@@ -6307,19 +6561,22 @@ document.getElementById('profile-photo').addEventListener('change', function(e) 
         parentPhotoFile = file;
         const reader = new FileReader();
         reader.onload = function(e) {
-            document.getElementById('profile-photo-preview').innerHTML = `<img src="${e.target.result}" class="photo-preview">`;
+            const preview = document.getElementById('profile-photo-preview');
+            if (preview) {
+                preview.innerHTML = `<img src="${e.target.result}" class="photo-preview">`;
+            }
         }
         reader.readAsDataURL(file);
     }
 });
 
-document.getElementById('profile-form').addEventListener('submit', async (e) => {
+document.getElementById('profile-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const fullName = document.getElementById('profile-fullname').value;
-    const email = document.getElementById('profile-email').value;
-    const phone = document.getElementById('profile-phone').value;
-    const newPassword = document.getElementById('profile-new-password').value;
-    const confirmPassword = document.getElementById('profile-confirm-password').value;
+    const fullName = document.getElementById('profile-fullname')?.value;
+    const email = document.getElementById('profile-email')?.value;
+    const phone = document.getElementById('profile-phone')?.value;
+    const newPassword = document.getElementById('profile-new-password')?.value;
+    const confirmPassword = document.getElementById('profile-confirm-password')?.value;
     
     if (!fullName || !email || !phone) {
         showAlert("Veuillez remplir tous les champs obligatoires", "error");
@@ -6342,9 +6599,10 @@ document.getElementById('profile-form').addEventListener('submit', async (e) => 
             fullName,
             email,
             phone,
-            photoURL,
             updatedAt: serverTimestamp()
         };
+        
+        if (photoURL) updateData.photoURL = photoURL;
         
         await updateDoc(doc(db, 'parents', currentParent.matricule), updateData);
         
@@ -6358,12 +6616,16 @@ document.getElementById('profile-form').addEventListener('submit', async (e) => 
                 studentRef = doc(db, 'kindergarten_students', child.matricule);
             }
             
-            await updateDoc(studentRef, {
-                parentName: fullName,
-                parentEmail: email,
-                parentPhone: phone,
-                updatedAt: serverTimestamp()
-            });
+            try {
+                await updateDoc(studentRef, {
+                    parentName: fullName,
+                    parentEmail: email,
+                    parentPhone: phone,
+                    updatedAt: serverTimestamp()
+                });
+            } catch (e) {
+                // Ignorer les erreurs individuelles
+            }
         }
         
         if (newPassword) {
@@ -6371,10 +6633,13 @@ document.getElementById('profile-form').addEventListener('submit', async (e) => 
         }
         
         currentParent = { ...currentParent, ...updateData };
-        document.getElementById('parent-name').textContent = fullName;
         
-        if (photoURL) {
-            document.getElementById('parent-photo-container').innerHTML = `<img src="${photoURL}" class="parent-photo" alt="Photo de profil">`;
+        const parentName = document.getElementById('parent-name');
+        if (parentName) parentName.textContent = fullName;
+        
+        const parentPhotoContainer = document.getElementById('parent-photo-container');
+        if (parentPhotoContainer && photoURL) {
+            parentPhotoContainer.innerHTML = `<img src="${photoURL}" class="parent-photo" alt="Photo de profil">`;
         }
         
         showAlert("Profil mis à jour avec succès", "success");
@@ -6389,16 +6654,17 @@ document.getElementById('profile-form').addEventListener('submit', async (e) => 
 // ============================================
 // FONCTIONS POUR AJOUTER UN ENFANT
 // ============================================
-document.getElementById('add-child-account-btn').addEventListener('click', () => {
-    document.getElementById('add-child-modal').classList.remove('hidden');
+document.getElementById('add-child-account-btn')?.addEventListener('click', () => {
+    const modal = document.getElementById('add-child-modal');
+    if (modal) modal.classList.remove('hidden');
 });
 
-document.getElementById('new-child-matricule').addEventListener('blur', async () => {
-    const matricule = document.getElementById('new-child-matricule').value;
+document.getElementById('new-child-matricule')?.addEventListener('blur', async () => {
+    const matricule = document.getElementById('new-child-matricule')?.value;
     const resultEl = document.getElementById('child-verification-result');
     
-    if (!matricule) {
-        resultEl.classList.add('hidden');
+    if (!matricule || !resultEl) {
+        if (resultEl) resultEl.classList.add('hidden');
         return;
     }
     
@@ -6452,10 +6718,10 @@ document.getElementById('new-child-matricule').addEventListener('blur', async ()
     }
 });
 
-document.getElementById('add-child-form').addEventListener('submit', async (e) => {
+document.getElementById('add-child-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const matricule = document.getElementById('new-child-matricule').value;
-    const relation = document.getElementById('child-relation').value;
+    const matricule = document.getElementById('new-child-matricule')?.value;
+    const relation = document.getElementById('child-relation')?.value;
     
     if (!matricule) {
         showAlert("Veuillez entrer un matricule", "error");
@@ -6517,7 +6783,7 @@ document.getElementById('add-child-form').addEventListener('submit', async (e) =
             updatedAt: serverTimestamp()
         });
         
-        const updatedChildren = [...currentParent.children, {
+        const updatedChildren = [...(currentParent.children || []), {
             matricule: matricule,
             type: studentType
         }];
@@ -6541,34 +6807,48 @@ document.getElementById('add-child-form').addEventListener('submit', async (e) =
             document.getElementById('payment-child-selector'),
             document.getElementById('timetable-child-selector')
         ];
-        generalSelectors.forEach(s => s.innerHTML += `<option value="${matricule}">${displayText}</option>`);
+        generalSelectors.forEach(s => {
+            if (s) s.innerHTML += `<option value="${matricule}">${displayText}</option>`;
+        });
         
         if (studentType === 'secondary') {
             const secondarySelectors = [
                 document.getElementById('secondary-grades-child-selector'),
                 document.getElementById('secondary-homework-child-selector')
             ];
-            secondarySelectors.forEach(s => s.innerHTML += `<option value="${matricule}">${studentData.fullName} - ${studentData.class}</option>`);
+            secondarySelectors.forEach(s => {
+                if (s) s.innerHTML += `<option value="${matricule}">${studentData.fullName} - ${studentData.class}</option>`;
+            });
         } else if (studentType === 'primary') {
             const primarySelectors = [
                 document.getElementById('primary-grades-child-selector'),
                 document.getElementById('primary-homework-child-selector')
             ];
-            primarySelectors.forEach(s => s.innerHTML += `<option value="${matricule}">${studentData.fullName} - ${studentData.class}</option>`);
+            primarySelectors.forEach(s => {
+                if (s) s.innerHTML += `<option value="${matricule}">${studentData.fullName} - ${studentData.class}</option>`;
+            });
         } else {
             const kindergartenSelectors = [
                 document.getElementById('kindergarten-grades-child-selector'),
                 document.getElementById('kindergarten-homework-child-selector')
             ];
-            kindergartenSelectors.forEach(s => s.innerHTML += `<option value="${matricule}">${studentData.fullName} - ${studentData.class}</option>`);
+            kindergartenSelectors.forEach(s => {
+                if (s) s.innerHTML += `<option value="${matricule}">${studentData.fullName} - ${studentData.class}</option>`;
+            });
         }
         
         updateChildrenPage();
         
         showAlert("Enfant ajouté avec succès", "success");
-        document.getElementById('add-child-modal').classList.add('hidden');
-        document.getElementById('add-child-form').reset();
-        document.getElementById('child-verification-result').classList.add('hidden');
+        
+        const modal = document.getElementById('add-child-modal');
+        if (modal) modal.classList.add('hidden');
+        
+        const form = document.getElementById('add-child-form');
+        if (form) form.reset();
+        
+        const resultEl = document.getElementById('child-verification-result');
+        if (resultEl) resultEl.classList.add('hidden');
         
     } catch (error) {
         console.error("Erreur ajout enfant:", error);
@@ -6608,6 +6888,7 @@ function markNotificationsAsRead(page) {
 
 function displayNotifications(filter = 'all') {
     const container = document.getElementById('notifications-list-container');
+    if (!container) return;
     
     let filteredNotifications = notifications;
     if (filter !== 'all') {
@@ -6649,10 +6930,10 @@ function displayNotifications(filter = 'all') {
             `<span style="color: var(--primary); margin-left: 5px;">(${notification.childName})</span>` : '';
         
         html += `
-            <div class="notification-item ${notification.read ? 'read' : 'unread'}" data-id="${notification.id}">
-                <div class="notification-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <i class="${icon}" style="color: var(--${badgeClass});"></i>
+            <div class="notification-item" style="background: ${notification.read ? '#f8f9fa' : '#e8f4fd'}; padding: 1rem; margin-bottom: 1rem; border-radius: 8px; border-left: 4px solid var(--${badgeClass});">
+                <div class="notification-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap;">
+                    <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                        <i class="${icon}" style="color: var(--${badgeClass}); font-size: 1.2rem;"></i>
                         <strong>${notification.title}</strong>
                         ${childInfo}
                         <span class="badge badge-${badgeClass}">${getTypeLabel(notification.type)}</span>
@@ -6664,7 +6945,7 @@ function displayNotifications(filter = 'all') {
                 </div>
                 <div style="margin-left: 30px;">
                     <p>${notification.body}</p>
-                    <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem;">
+                    <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
                         ${!notification.read ? `
                             <button class="btn btn-success btn-sm" onclick="markNotificationAsRead('${notification.id}')">
                                 <i class="fas fa-check"></i> Marquer comme lu
@@ -6693,6 +6974,7 @@ function getBadgeClassForType(type) {
         'payments': 'info',
         'messages': 'primary',
         'communiques': 'secondary',
+        'presence': 'info',
         'test': 'info'
     };
     return typeMap[type] || 'primary';
@@ -6706,6 +6988,7 @@ function getIconForType(type) {
         'payments': 'fas fa-money-bill',
         'messages': 'fas fa-envelope',
         'communiques': 'fas fa-newspaper',
+        'presence': 'fas fa-calendar-check',
         'test': 'fas fa-bell'
     };
     return iconMap[type] || 'fas fa-bell';
@@ -6713,12 +6996,13 @@ function getIconForType(type) {
 
 function getTypeLabel(type) {
     const labelMap = {
-        'grades': 'Nouvelle note',
+        'grades': 'Note',
         'homework': 'Devoir',
         'incidents': 'Incident',
         'payments': 'Paiement',
         'messages': 'Message',
         'communiques': 'Communiqué',
+        'presence': 'Présence',
         'test': 'Test'
     };
     return labelMap[type] || 'Notification';
@@ -6735,29 +7019,49 @@ document.querySelectorAll('.nav-menu a').forEach(link => {
         markNotificationsAsRead(page);
         
         const pageId = page + '-page';
-        document.querySelectorAll('.nav-menu a, .page').forEach(el => el.classList.remove('active'));
+        document.querySelectorAll('.nav-menu a, .page').forEach(el => {
+            if (el) el.classList.remove('active');
+        });
         link.classList.add('active');
-        document.getElementById(pageId).classList.add('active');
-        document.getElementById('page-title').textContent = link.textContent;
+        
+        const targetPage = document.getElementById(pageId);
+        if (targetPage) targetPage.classList.add('active');
+        
+        const pageTitle = document.getElementById('page-title');
+        if (pageTitle) pageTitle.textContent = link.textContent.trim();
         
         if (window.innerWidth <= 768) {
-            document.querySelector('.sidebar').classList.add('collapsed');
+            const sidebar = document.querySelector('.sidebar');
+            if (sidebar) sidebar.classList.add('collapsed');
         }
         
         if (page === 'dashboard') {
-            document.getElementById('child-selector').value = '';
-            document.getElementById('child-dashboard-content').classList.add('hidden');
+            const childSelector = document.getElementById('child-selector');
+            if (childSelector) childSelector.value = '';
+            
+            const dashboardContent = document.getElementById('child-dashboard-content');
+            if (dashboardContent) dashboardContent.classList.add('hidden');
         } else if (page === 'presence-incidents') {
-            document.getElementById('presence-child-selector').value = '';
-            document.getElementById('presence-incidents-content').classList.add('hidden');
+            const presenceSelector = document.getElementById('presence-child-selector');
+            if (presenceSelector) presenceSelector.value = '';
+            
+            const presenceContent = document.getElementById('presence-incidents-content');
+            if (presenceContent) presenceContent.classList.add('hidden');
         } else if (page === 'payments') {
-            document.getElementById('payment-child-selector').value = '';
-            document.getElementById('payment-content').classList.add('hidden');
+            const paymentSelector = document.getElementById('payment-child-selector');
+            if (paymentSelector) paymentSelector.value = '';
+            
+            const paymentContent = document.getElementById('payment-content');
+            if (paymentContent) paymentContent.classList.add('hidden');
         } else if (page === 'timetable') {
-            document.getElementById('timetable-child-selector').value = '';
-            document.getElementById('timetable-content').classList.add('hidden');
+            const timetableSelector = document.getElementById('timetable-child-selector');
+            if (timetableSelector) timetableSelector.value = '';
+            
+            const timetableContent = document.getElementById('timetable-content');
+            if (timetableContent) timetableContent.classList.add('hidden');
         } else if (page === 'notifications') {
-            displayNotifications(document.getElementById('notification-filter').value);
+            const filter = document.getElementById('notification-filter');
+            if (filter) displayNotifications(filter.value);
         }
     });
 });
@@ -6765,16 +7069,21 @@ document.querySelectorAll('.nav-menu a').forEach(link => {
 // ============================================
 // GESTION DU MENU MOBILE
 // ============================================
-document.getElementById('menu-toggle').addEventListener('click', function() {
+document.getElementById('menu-toggle')?.addEventListener('click', function() {
     const sidebar = document.querySelector('.sidebar');
-    sidebar.classList.toggle('collapsed');
+    if (sidebar) {
+        sidebar.classList.toggle('collapsed');
+    }
 });
 
 document.addEventListener('click', (e) => {
     const sidebar = document.querySelector('.sidebar');
     const menuToggle = document.getElementById('menu-toggle');
     
-    if (!sidebar.contains(e.target) && !menuToggle.contains(e.target) && window.innerWidth <= 768) {
+    if (sidebar && menuToggle && 
+        !sidebar.contains(e.target) && 
+        !menuToggle.contains(e.target) && 
+        window.innerWidth <= 768) {
         sidebar.classList.add('collapsed');
     }
 });
@@ -6783,39 +7092,69 @@ document.addEventListener('click', (e) => {
 // SOUS-ONGLETS
 // ============================================
 function setupSubTabs() {
-    document.querySelectorAll('#grades-page .sub-tab').forEach(tab => {
+    const gradesTabs = document.querySelectorAll('#grades-page .sub-tab');
+    gradesTabs.forEach(tab => {
         tab.addEventListener('click', () => {
             const subTabId = tab.getAttribute('data-sub-tab');
             
-            document.querySelectorAll('#grades-page .sub-tab, #grades-page .sub-tab-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('#grades-page .sub-tab, #grades-page .sub-tab-content').forEach(el => {
+                if (el) el.classList.remove('active');
+            });
             
             tab.classList.add('active');
-            document.getElementById(`${subTabId}-tab`).classList.add('active');
+            const tabContent = document.getElementById(`${subTabId}-tab`);
+            if (tabContent) tabContent.classList.add('active');
             
-            document.getElementById('secondary-grades-child-selector').value = '';
-            document.getElementById('secondary-grades-content').classList.add('hidden');
-            document.getElementById('primary-grades-child-selector').value = '';
-            document.getElementById('primary-grades-content').classList.add('hidden');
-            document.getElementById('kindergarten-grades-child-selector').value = '';
-            document.getElementById('kindergarten-grades-content').classList.add('hidden');
+            const secondarySelector = document.getElementById('secondary-grades-child-selector');
+            if (secondarySelector) secondarySelector.value = '';
+            
+            const secondaryContent = document.getElementById('secondary-grades-content');
+            if (secondaryContent) secondaryContent.classList.add('hidden');
+            
+            const primarySelector = document.getElementById('primary-grades-child-selector');
+            if (primarySelector) primarySelector.value = '';
+            
+            const primaryContent = document.getElementById('primary-grades-content');
+            if (primaryContent) primaryContent.classList.add('hidden');
+            
+            const kindergartenSelector = document.getElementById('kindergarten-grades-child-selector');
+            if (kindergartenSelector) kindergartenSelector.value = '';
+            
+            const kindergartenContent = document.getElementById('kindergarten-grades-content');
+            if (kindergartenContent) kindergartenContent.classList.add('hidden');
         });
     });
     
-    document.querySelectorAll('#homework-page .sub-tab').forEach(tab => {
+    const homeworkTabs = document.querySelectorAll('#homework-page .sub-tab');
+    homeworkTabs.forEach(tab => {
         tab.addEventListener('click', () => {
             const subTabId = tab.getAttribute('data-sub-tab');
             
-            document.querySelectorAll('#homework-page .sub-tab, #homework-page .sub-tab-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('#homework-page .sub-tab, #homework-page .sub-tab-content').forEach(el => {
+                if (el) el.classList.remove('active');
+            });
             
             tab.classList.add('active');
-            document.getElementById(`${subTabId}-tab`).classList.add('active');
+            const tabContent = document.getElementById(`${subTabId}-tab`);
+            if (tabContent) tabContent.classList.add('active');
             
-            document.getElementById('secondary-homework-child-selector').value = '';
-            document.getElementById('secondary-homework-content').classList.add('hidden');
-            document.getElementById('primary-homework-child-selector').value = '';
-            document.getElementById('primary-homework-content').classList.add('hidden');
-            document.getElementById('kindergarten-homework-child-selector').value = '';
-            document.getElementById('kindergarten-homework-content').classList.add('hidden');
+            const secondarySelector = document.getElementById('secondary-homework-child-selector');
+            if (secondarySelector) secondarySelector.value = '';
+            
+            const secondaryContent = document.getElementById('secondary-homework-content');
+            if (secondaryContent) secondaryContent.classList.add('hidden');
+            
+            const primarySelector = document.getElementById('primary-homework-child-selector');
+            if (primarySelector) primarySelector.value = '';
+            
+            const primaryContent = document.getElementById('primary-homework-content');
+            if (primaryContent) primaryContent.classList.add('hidden');
+            
+            const kindergartenSelector = document.getElementById('kindergarten-homework-child-selector');
+            if (kindergartenSelector) kindergartenSelector.value = '';
+            
+            const kindergartenContent = document.getElementById('kindergarten-homework-content');
+            if (kindergartenContent) kindergartenContent.classList.add('hidden');
         });
     });
 }
@@ -6825,7 +7164,9 @@ function setupSubTabs() {
 // ============================================
 document.querySelectorAll('.close-modal').forEach(btn => {
     btn.addEventListener('click', () => {
-        document.querySelectorAll('.modal').forEach(modal => modal.classList.add('hidden'));
+        document.querySelectorAll('.modal').forEach(modal => {
+            if (modal) modal.classList.add('hidden');
+        });
     });
 });
 
@@ -6837,26 +7178,29 @@ document.querySelectorAll('.modal').forEach(modal => {
     });
 });
 
-window.closeModal = (modalId) => document.getElementById(modalId).classList.add('hidden');
+window.closeModal = (modalId) => {
+    const modal = document.getElementById(modalId);
+    if (modal) modal.classList.add('hidden');
+};
 
 // ============================================
 // BOUTON NOTIFICATION
 // ============================================
-document.getElementById('notification-bell').addEventListener('click', () => {
+document.getElementById('notification-bell')?.addEventListener('click', () => {
     const link = document.querySelector('.nav-menu a[data-page="notifications"]');
     if (link) link.click();
 });
 
-document.getElementById('notification-filter').addEventListener('change', (e) => {
+document.getElementById('notification-filter')?.addEventListener('change', (e) => {
     displayNotifications(e.target.value);
 });
 
-document.getElementById('clear-all-notifications-btn').addEventListener('click', clearAllNotifications);
+document.getElementById('clear-all-notifications-btn')?.addEventListener('click', clearAllNotifications);
 
 // ============================================
 // BOUTONS DE NOTIFICATION DANS LE PROFIL
 // ============================================
-document.getElementById('enable-notifications-btn').addEventListener('click', async () => {
+document.getElementById('enable-notifications-btn')?.addEventListener('click', async () => {
     const granted = await requestNotificationPermission();
     if (granted) {
         await updateDoc(doc(db, 'parents', currentParent.matricule), {
@@ -6866,28 +7210,56 @@ document.getElementById('enable-notifications-btn').addEventListener('click', as
         
         currentParent.notificationEnabled = true;
         updateProfileForm();
+        showToast('Notifications activées avec succès !', 'success');
     }
 });
 
-document.getElementById('test-notification-btn').addEventListener('click', testNotification);
+document.getElementById('test-notification-btn')?.addEventListener('click', testNotification);
+
+// ============================================
+// BOUTON DE TEST NOTIFICATION DANS L'INTERFACE
+// ============================================
+// Ajouter ce bouton dans votre HTML quelque part
+const testBtn = document.createElement('button');
+testBtn.className = 'btn btn-warning btn-sm';
+testBtn.style.position = 'fixed';
+testBtn.style.bottom = '20px';
+testBtn.style.left = '20px';
+testBtn.style.zIndex = '9999';
+testBtn.innerHTML = '<i class="fas fa-bell"></i> Tester notification';
+testBtn.onclick = testNotification;
+document.body.appendChild(testBtn);
 
 // ============================================
 // INITIALISATION
 // ============================================
-setupSubTabs();
-</script>
-<button onclick="testNotification()" class="btn btn-warning btn-sm">
-  <i class="fas fa-bell"></i> Tester notification
-</button>
+function initialize() {
+    console.log('🚀 Initialisation de l\'application...');
+    
+    setupSubTabs();
+    
+    // Enregistrer le Service Worker au chargement
+    registerServiceWorker();
+    
+    // Vérifier si l'app est en mode standalone (installée)
+    if (window.matchMedia('(display-mode: standalone)').matches || 
+        window.navigator.standalone === true) {
+        console.log('📱 Application installée en mode standalone');
+        document.body.classList.add('installed-app');
+    }
+    
+    // Charger les notifications
+    loadNotificationsFromStorage();
+    
+    // Ajouter la classe pour iOS
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+    if (isIOS) {
+        document.body.classList.add('ios-device');
+    }
+}
 
-<script>
-window.testNotification = function() {
-  sendNotification({
-    title: '🔔 Test réussi',
-    body: 'Les notifications fonctionnent parfaitement !',
-    type: 'test',
-    page: 'dashboard',
-    timestamp: new Date().toISOString()
-  });
-};
+// Lancer l'initialisation au chargement
+document.addEventListener('DOMContentLoaded', initialize);
 </script>
+</body>
+</html>
