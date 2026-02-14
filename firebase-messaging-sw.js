@@ -33,12 +33,12 @@ messaging.onBackgroundMessage((payload) => {
   const data = payload.data || {};
   
   // Déterminer l'icône selon le type
-  let icon = '/icon-192x192.png';
-  if (data.type === 'grades') icon = '/icons/grades-icon.png';
-  else if (data.type === 'incidents') icon = '/icons/incident-icon.png';
-  else if (data.type === 'homework') icon = '/icons/homework-icon.png';
-  else if (data.type === 'presence') icon = '/icons/presence-icon.png';
-  else if (data.type === 'communiques') icon = '/icons/communique-icon.png';
+  let icon = 'icon-192x192.png';
+  if (data.type === 'grades') icon = 'icon-192x192.png';
+  else if (data.type === 'incidents') icon = 'icon-192x192.png';
+  else if (data.type === 'homework') icon = 'icon-192x192.png';
+  else if (data.type === 'presence') icon = 'icon-192x192.png';
+  else if (data.type === 'communiques') icon = 'icon-192x192.png';
   
   // Options de la notification
   const notificationOptions = {
@@ -137,8 +137,8 @@ const urlsToCache = [
   '/',
   'index.html',
   'manifest.json',
-  '/icon-192x192.png',
-  '/icon-512x512.png'
+  'icon-192x192.png',
+  'icon-512x512.png'
 ];
 
 self.addEventListener('install', (event) => {
