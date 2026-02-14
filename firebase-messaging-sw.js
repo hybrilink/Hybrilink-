@@ -33,7 +33,7 @@ messaging.onBackgroundMessage((payload) => {
   const data = payload.data || {};
   
   // Déterminer l'icône selon le type
-  let icon = '/icon-192x192.png';
+  let icon = 'icon-192x192.png';
   if (data.type === 'grades') icon = '/icons/grades-icon.png';
   else if (data.type === 'incidents') icon = '/icons/incident-icon.png';
   else if (data.type === 'homework') icon = '/icons/homework-icon.png';
@@ -44,7 +44,7 @@ messaging.onBackgroundMessage((payload) => {
   const notificationOptions = {
     body: body || 'Nouvelle notification',
     icon: icon,
-    badge: '/icon-72x72.png',
+    badge: 'icon-72x72.png',
     tag: data.type || 'general',
     data: data,
     requireInteraction: true,
@@ -89,7 +89,7 @@ self.addEventListener('notificationclick', (event) => {
         .then((clientList) => {
           // Si une fenêtre est déjà ouverte, la focus
           for (const client of clientList) {
-            if (client.url.includes('/index.html') && 'focus' in client) {
+            if (client.url.includes('index.html') && 'focus' in client) {
               // Naviguer vers la page spécifique
               client.postMessage({
                 type: 'NAVIGATE',
@@ -103,7 +103,7 @@ self.addEventListener('notificationclick', (event) => {
           
           // Sinon, ouvrir une nouvelle fenêtre
           if (clients.openWindow) {
-            let url = '/index.html';
+            let url = 'index.html';
             if (data.page) {
               url += `?page=${data.page}`;
               if (data.childId) url += `&child=${data.childId}`;
@@ -135,10 +135,10 @@ self.addEventListener('message', (event) => {
 const CACHE_NAME = 'parent-app-v1';
 const urlsToCache = [
   '/',
-  '/index.html',
-  '/manifest.json',
-  '/icon-192x192.png',
-  '/icon-512x512.png'
+  'index.html',
+  'manifest.json',
+  'icon-192x192.png',
+  'icon-512x512.png'
 ];
 
 self.addEventListener('install', (event) => {
