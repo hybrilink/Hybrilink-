@@ -2,7 +2,7 @@
   "name": "Espace Parent - CS la Colombe",
   "short_name": "Espace Parent",
   "description": "Application de suivi scolaire pour parents - Notes, présences, paiements, communiqués",
-  "start_url": "/index.html",
+  "start_url": "index.html",
   "display": "standalone",
   "background_color": "#3498db",
   "theme_color": "#3498db",
