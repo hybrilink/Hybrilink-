@@ -160,8 +160,8 @@ self.addEventListener('message', (event) => {
 const CACHE_NAME = 'parent-app-v3';
 const urlsToCache = [
   '/',
-  '/index.html',
-  '/manifest.json',
+  'index.html',
+  'manifest.json',
   '/icon-72x72.png',
   '/icon-96x96.png',
   '/icon-128x128.png',
