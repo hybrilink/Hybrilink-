@@ -1198,7 +1198,7 @@ body {
     </style>
 
 <!-- Notification System -->
-<script src="firebase-notifications.js"></script>
+<script src="firebase-messaging-sw.js"></script>
 <script src="notification-manager.js"></script>
 
 <!-- Initialisation automatique -->
@@ -2184,7 +2184,8 @@ async function registerServiceWorker() {
       }
       
       // Enregistrer le nouveau
-      const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js', {
+      const registration = await navigator.serviceWorker.register('/
+firebase-messaging-sw.js', {
         scope: '/'
       });
       
