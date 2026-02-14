@@ -33,7 +33,7 @@ messaging.onBackgroundMessage((payload) => {
   const data = payload.data || {};
   
   // Déterminer l'icône selon le type
-  let icon = 'icon-192x192.png';
+  let icon = '/icon-192x192.png';
   if (data.type === 'grades') icon = '/icons/grades-icon.png';
   else if (data.type === 'incidents') icon = '/icons/incident-icon.png';
   else if (data.type === 'homework') icon = '/icons/homework-icon.png';
@@ -44,7 +44,7 @@ messaging.onBackgroundMessage((payload) => {
   const notificationOptions = {
     body: body || 'Nouvelle notification',
     icon: icon,
-    badge: 'icon-72x72.png',
+    badge: '/icon-72x72.png',
     tag: data.type || 'general',
     data: data,
     requireInteraction: true,
@@ -137,8 +137,8 @@ const urlsToCache = [
   '/',
   'index.html',
   'manifest.json',
-  'icon-192x192.png',
-  'icon-512x512.png'
+  '/icon-192x192.png',
+  '/icon-512x512.png'
 ];
 
 self.addEventListener('install', (event) => {
