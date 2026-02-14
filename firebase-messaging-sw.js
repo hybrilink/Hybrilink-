@@ -33,18 +33,18 @@ messaging.onBackgroundMessage((payload) => {
   const data = payload.data || {};
   
   // Déterminer l'icône selon le type
-  let icon = 'icon-192x192.png';
+  let icon = './icon-192x192.png';
   if (data.type === 'grades') icon = 'icon-192x192.png';
   else if (data.type === 'incidents') icon = 'icon-192x192.png';
-  else if (data.type === 'homework') icon = 'icon-192x192.png';
-  else if (data.type === 'presence') icon = 'icon-192x192.png';
-  else if (data.type === 'communiques') icon = 'icon-192x192.png';
+  else if (data.type === 'homework') icon = '/icon-192x192.png';
+  else if (data.type === 'presence') icon = '.icon-96x96.png';
+  else if (data.type === 'communiques') icon = './icon-512x512.png';
   
   // Options de la notification
   const notificationOptions = {
     body: body || 'Nouvelle notification',
     icon: icon,
-    badge: '/icon-72x72.png',
+    badge: './icon-72x72.png',
     tag: data.type || 'general',
     data: data,
     requireInteraction: true,
